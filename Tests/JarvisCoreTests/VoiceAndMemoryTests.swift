@@ -271,3 +271,38 @@ final class ScreenMemoryTests: XCTestCase {
         XCTAssertFalse(OnDeviceRules.allows(ActionTag(kind: .recall, value: "x"), transcript: "find it"))
     }
 }
+
+final class KokoroTests: XCTestCase {
+    func testPicksTheVoiceByLanguage() {
+        XCTAssertEqual(KokoroCatalog.voice(for: "Opening Chrome.", english: 3, hindi: 33), 3)
+        XCTAssertEqual(KokoroCatalog.voice(for: "आपका WhatsApp खोल रहा हूँ।", english: 3, hindi: 33), 33)
+    }
+
+    func testOnlyHindiGetsALanguageHint() {
+        XCTAssertNil(KokoroCatalog.generationExtra(for: "Hello there"))
+        XCTAssertEqual(KokoroCatalog.generationExtra(for: "नमस्ते"), #"{"lang":"hi"}"#)
+    }
+
+    func testVoiceNumbersMatchTheModel() {
+        XCTAssertEqual(KokoroCatalog.hindiVoices.map(\.id).sorted(), [31, 32, 33, 34])
+        XCTAssertTrue(KokoroCatalog.englishVoices.allSatisfy { (0...27).contains($0.id) })
+        XCTAssertTrue(KokoroCatalog.englishVoices.contains { $0.id == KokoroCatalog.defaultEnglishVoice })
+        XCTAssertTrue(KokoroCatalog.hindiVoices.contains { $0.id == KokoroCatalog.defaultHindiVoice })
+    }
+
+    func testChecksumsAreFullLength() {
+        for download in [KokoroCatalog.runtime, KokoroCatalog.model] {
+            XCTAssertEqual(download.sha256.count, 64)
+            XCTAssertEqual(download.url.scheme, "https")
+        }
+        XCTAssertTrue(KokoroCatalog.matches("ABC", "abc"))
+        XCTAssertFalse(KokoroCatalog.matches("abd", "abc"))
+    }
+
+    func testSampleConversion() {
+        let samples: [Float] = [0, 1, -1, 2, -2]
+        let data = samples.withUnsafeBufferPointer { KokoroCatalog.pcm16(from: $0) }
+        let values = stride(from: 0, to: data.count, by: 2).map { Int16(littleEndian: data.subdata(in: $0..<($0 + 2)).withUnsafeBytes { $0.loadUnaligned(as: Int16.self) }) }
+        XCTAssertEqual(values, [0, 32767, -32767, 32767, -32767])
+    }
+}

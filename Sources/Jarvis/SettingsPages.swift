@@ -476,3 +476,52 @@ struct ScreenMemoryPage: View {
         .onAppear { memory.refreshCount() }
     }
 }
+
+/// Installing Kokoro and choosing its voices. Nothing is downloaded until they ask.
+struct KokoroRows: View {
+    @ObservedObject var settings: AppSettings
+    @ObservedObject var installer: KokoroInstaller
+
+    private var total: Int { KokoroCatalog.runtime.megabytes + KokoroCatalog.model.megabytes }
+
+    var body: some View {
+        Group {
+            if installer.isInstalled {
+                Row("English voice") {
+                    Picker("", selection: $settings.kokoroEnglishVoice) {
+                        ForEach(KokoroCatalog.englishVoices) { Text("\($0.name) (\($0.description))").tag($0.id) }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                }
+                Divider().overlay(Palette.line)
+                Row("Hindi voice", detail: "Used for any reply written in Hindi") {
+                    Picker("", selection: $settings.kokoroHindiVoice) {
+                        ForEach(KokoroCatalog.hindiVoices) { Text("\($0.name) (\($0.description))").tag($0.id) }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                }
+                Divider().overlay(Palette.line)
+                Row("Installed on this Mac", detail: "Takes about 220 MB") {
+                    OutlineButton("Remove") { installer.remove() }
+                }
+            } else if !KokoroInstaller.isSupportedMac {
+                Row("Kokoro needs a Mac with Apple silicon") { EmptyView() }
+            } else {
+                switch installer.state {
+                case .working(let step):
+                    Row("Installing Kokoro", detail: step) { ProgressView().controlSize(.small) }
+                case .idle:
+                    Row("Install Kokoro", detail: "Downloads about \(total) MB from the sherpa-onnx project on GitHub, and checks each file before installing it") {
+                        OutlineButton("Download", action: installer.install)
+                    }
+                case .failed(let problem):
+                    Row("Install Kokoro", detail: problem) {
+                        OutlineButton("Try again", action: installer.install)
+                    }
+                }
+            }
+        }
+    }
+}

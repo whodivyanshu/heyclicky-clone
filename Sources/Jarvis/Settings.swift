@@ -22,9 +22,16 @@ enum ProviderChoice: String, CaseIterable, Identifiable {
 }
 
 enum VoiceEngine: String, CaseIterable, Identifiable {
-    case system, gemini
+    case system, gemini, kokoro
     var id: String { rawValue }
-    var title: String { self == .system ? "Mac voice (free, offline)" : "Gemini voice (natural)" }
+
+    var title: String {
+        switch self {
+        case .system: "Mac voice (free, offline)"
+        case .gemini: "Gemini voice (natural)"
+        case .kokoro: "Kokoro (free, on this Mac)"
+        }
+    }
 }
 
 enum HotkeyChoice: String, CaseIterable, Identifiable {
@@ -139,6 +146,7 @@ final class AppSettings: ObservableObject {
     @MainActor let activity = ActivityStore()
     @MainActor let routines = RoutineStore()
     @MainActor let meetings = MeetingStore()
+    @MainActor let kokoro = KokoroInstaller()
     @MainActor let screenMemory = ScreenMemoryStore()
 
     @Published var provider: ProviderChoice { didSet { save(provider.rawValue, "provider") } }
@@ -152,13 +160,16 @@ final class AppSettings: ObservableObject {
     /// Lets Jarvis use the keyboard and work through several steps by itself. Off until the user chooses it.
     @Published var controlsMac: Bool { didSet { UserDefaults.standard.set(controlsMac, forKey: "controlsMac") } }
     @Published var voiceEngine: VoiceEngine { didSet { save(voiceEngine.rawValue, "voiceEngine") } }
+    @Published var kokoroEnglishVoice: Int { didSet { UserDefaults.standard.set(kokoroEnglishVoice, forKey: "kokoroEnglishVoice") } }
+    @Published var kokoroHindiVoice: Int { didSet { UserDefaults.standard.set(kokoroHindiVoice, forKey: "kokoroHindiVoice") } }
     @Published var geminiVoice: String { didSet { save(geminiVoice, "geminiVoice") } }
     @Published var geminiVoiceModel: String { didSet { save(geminiVoiceModel, "geminiVoiceModel") } }
     /// Listens and replies in Hindi. Turning it on also selects the deep Gemini voice preset.
     @Published var hindiAssistant: Bool {
         didSet {
             UserDefaults.standard.set(hindiAssistant, forKey: "hindiAssistant")
-            if hindiAssistant {
+            // Kokoro has its own Hindi voices, so choosing Hindi shouldn't take them off it.
+            if hindiAssistant, voiceEngine != .kokoro {
                 voiceEngine = .gemini
                 geminiVoice = GeminiVoiceWire.hindiAssistantVoice
             }
@@ -207,6 +218,8 @@ final class AppSettings: ObservableObject {
         showIslandWhenIdle = defaults.object(forKey: "showIslandWhenIdle") as? Bool ?? true
         controlsMac = defaults.bool(forKey: "controlsMac")
         voiceEngine = defaults.string(forKey: "voiceEngine").flatMap(VoiceEngine.init) ?? (Keychain.geminiKey != nil ? .gemini : .system)
+        kokoroEnglishVoice = defaults.object(forKey: "kokoroEnglishVoice") as? Int ?? KokoroCatalog.defaultEnglishVoice
+        kokoroHindiVoice = defaults.object(forKey: "kokoroHindiVoice") as? Int ?? KokoroCatalog.defaultHindiVoice
         geminiVoice = defaults.string(forKey: "geminiVoice") ?? GeminiVoiceWire.defaultVoice
         geminiVoiceModel = defaults.string(forKey: "geminiVoiceModel") ?? GeminiVoiceWire.defaultModel
         hindiAssistant = defaults.bool(forKey: "hindiAssistant")
@@ -231,6 +244,9 @@ final class AppSettings: ObservableObject {
     func voiceConfig() -> VoiceConfig {
         // The Mac voice picker only lists the system language, so Hindi needs its own voice here.
         let macVoice = hindiAssistant ? AVSpeechSynthesisVoice(language: "hi-IN")?.identifier ?? voiceIdentifier : voiceIdentifier
+        if voiceEngine == .kokoro, KokoroFiles.isInstalled {
+            return .kokoro(englishVoice: kokoroEnglishVoice, hindiVoice: kokoroHindiVoice, assistantEffect: hindiAssistant, fallbackIdentifier: macVoice)
+        }
         if voiceEngine == .gemini, let key = Keychain.geminiKey, !key.isEmpty {
             return .gemini(
                 apiKey: key,

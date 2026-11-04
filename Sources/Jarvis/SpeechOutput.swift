@@ -4,10 +4,31 @@ import JarvisCore
 enum VoiceConfig {
     case system(identifier: String)
     case gemini(apiKey: String, voice: String, model: String, style: String, assistantEffect: Bool, fallbackIdentifier: String)
+    case kokoro(englishVoice: Int, hindiVoice: Int, assistantEffect: Bool, fallbackIdentifier: String)
+
+    var assistantEffect: Bool {
+        switch self {
+        case .system: false
+        case .gemini(_, _, _, _, let effect, _), .kokoro(_, _, let effect, _): effect
+        }
+    }
+
+    var fallbackIdentifier: String {
+        switch self {
+        case .system(let identifier): identifier
+        case .gemini(_, _, _, _, _, let fallback), .kokoro(_, _, _, let fallback): fallback
+        }
+    }
+
+    /// Voices that make audio as a stream, as opposed to the Mac's own speech.
+    var usesAudioStream: Bool {
+        if case .system = self { return false }
+        return true
+    }
 }
 
-/// One Gemini speech request. It starts downloading immediately, so its audio is ready sooner when its turn comes.
-final class GeminiVoiceStream: Sendable {
+/// One piece of speech. It starts being made immediately, so its audio is ready sooner when its turn comes.
+final class VoiceStream: Sendable {
     let chunks: AsyncThrowingStream<Data, Error>
     private let task: Task<Void, Never>
 
@@ -17,6 +38,21 @@ final class GeminiVoiceStream: Sendable {
         task = Task.detached {
             do {
                 try await Self.download(text: text, apiKey: apiKey, voice: voice, model: model, style: style) { continuation.yield($0) }
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
+            }
+        }
+    }
+
+    /// Kokoro makes each piece on this Mac, in the same audio format as Gemini.
+    init(text: String, kokoroVoice: Int) {
+        let (chunks, continuation) = AsyncThrowingStream.makeStream(of: Data.self)
+        self.chunks = chunks
+        task = Task.detached {
+            do {
+                try Task.checkCancellation()
+                continuation.yield(try await KokoroEngine.shared.speak(text, voice: kokoroVoice))
                 continuation.finish()
             } catch {
                 continuation.finish(throwing: error)
@@ -172,7 +208,7 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
         case target(PointTag)
         case click(PointTag)
         case action(ActionTag)
-        case say(String, voice: GeminiVoiceStream?)
+        case say(String, voice: VoiceStream?)
     }
 
     /// Keeps each Gemini request a reasonable size while still sending fewer requests than one per sentence.
@@ -182,10 +218,10 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
     /// Speaks while the queue is held waiting for a confirmation, so it has no delegate to move the queue along.
     private let announcer = AVSpeechSynthesizer()
     private var announcementPlayer: PCMStreamPlayer?
-    private var announcementVoice: GeminiVoiceStream?
+    private var announcementVoice: VoiceStream?
     private var announcementGeneration = 0
     private var player: PCMStreamPlayer?
-    private var currentVoice: GeminiVoiceStream?
+    private var currentVoice: VoiceStream?
     private var runningAction: Task<Void, Never>?
     private var config = VoiceConfig.system(identifier: "")
     private var queue: [Item] = []
@@ -217,7 +253,7 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
             switch beat {
             case .say(let text):
                 if dropsFurtherSpeech { continue }
-                if case .gemini = config {
+                if config.usesAudioStream {
                     unsentText += unsentText.isEmpty ? text : " " + text
                     // The first sentence goes straight away, so the voice can start before the model has finished writing.
                     if !sentFirstSentence || unsentText.count >= Self.maxMergedCharacters {
@@ -275,13 +311,11 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
     /// Says something right away, outside the queue, which stays held.
     func announce(_ text: String) {
         stopAnnouncement()
-        guard let voice = geminiStream(for: text) else {
+        guard let voice = voiceStream(for: text) else {
             announcer.speak(macUtterance(text))
             return
         }
-        var assistantEffect = false
-        if case .gemini(_, _, _, _, let effect, _) = config { assistantEffect = effect }
-        let player = PCMStreamPlayer(assistantEffect: assistantEffect)
+        let player = PCMStreamPlayer(assistantEffect: config.assistantEffect)
         announcementVoice = voice
         announcementPlayer = player
         let started = announcementGeneration
@@ -314,12 +348,19 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
         guard !unsentText.isEmpty else { return }
         let text = unsentText
         unsentText = ""
-        queue.append(.say(text, voice: geminiStream(for: text)))
+        queue.append(.say(text, voice: voiceStream(for: text)))
     }
 
-    private func geminiStream(for text: String) -> GeminiVoiceStream? {
-        guard case .gemini(let key, let voice, let model, let style, _, _) = config, !geminiFailedThisTurn else { return nil }
-        return GeminiVoiceStream(text: text, apiKey: key, voice: voice, model: model, style: style)
+    private func voiceStream(for text: String) -> VoiceStream? {
+        guard !geminiFailedThisTurn else { return nil }
+        switch config {
+        case .gemini(let key, let voice, let model, let style, _, _):
+            return VoiceStream(text: text, apiKey: key, voice: voice, model: model, style: style)
+        case .kokoro(let english, let hindi, _, _):
+            return VoiceStream(text: text, kokoroVoice: KokoroCatalog.voice(for: text, english: english, hindi: hindi))
+        case .system:
+            return nil
+        }
     }
 
     private func advance() {
@@ -371,15 +412,13 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
         dropsFurtherSpeech = true
         // Empty means the reply was dropped without a word, because Jarvis is about to try another way.
         guard !text.isEmpty else { return }
-        queue.insert(.say(text, voice: geminiStream(for: text)), at: 0)
+        queue.insert(.say(text, voice: voiceStream(for: text)), at: 0)
     }
 
-    private func play(_ voice: GeminiVoiceStream, text: String) {
+    private func play(_ voice: VoiceStream, text: String) {
         currentVoice = voice
         let started = generation
-        var assistantEffect = false
-        if case .gemini(_, _, _, _, let effect, _) = config { assistantEffect = effect }
-        let player = PCMStreamPlayer(assistantEffect: assistantEffect)
+        let player = PCMStreamPlayer(assistantEffect: config.assistantEffect)
         self.player = player
         Task {
             var heardAny = false
@@ -390,7 +429,7 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
                     heardAny = true
                 }
                 guard started == generation else { return }
-                if !heardAny { throw AIError("Gemini voice: the response had no audio.") }
+                if !heardAny { throw AIError("The voice had no audio.") }
             } catch {
                 guard started == generation else { return }
                 if !geminiFailedThisTurn {
@@ -416,13 +455,8 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     private func macUtterance(_ text: String) -> AVSpeechUtterance {
-        let identifier: String
-        switch config {
-        case .system(let chosen): identifier = chosen
-        case .gemini(_, _, _, _, _, let fallback): identifier = fallback
-        }
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = Self.macVoice(identifier: identifier)
+        utterance.voice = Self.macVoice(identifier: config.fallbackIdentifier)
         return utterance
     }
 

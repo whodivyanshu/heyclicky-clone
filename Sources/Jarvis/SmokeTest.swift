@@ -12,12 +12,19 @@ enum SmokeTest {
 
     /// `Jarvis --tts "text" [--voice name] [--model name] [--hindi]`: plays text aloud through the real speech path.
     static func runVoice() -> Never {
-        guard let key = ProcessInfo.processInfo.environment["GEMINI_API_KEY"] ?? Keychain.geminiKey else {
+        let hindi = CommandLine.arguments.contains("--hindi")
+        let usesKokoro = CommandLine.arguments.contains("--kokoro")
+        let key = ProcessInfo.processInfo.environment["GEMINI_API_KEY"] ?? Keychain.geminiKey ?? ""
+        guard usesKokoro || !key.isEmpty else {
             print("No Gemini key: set GEMINI_API_KEY or save one in Settings.")
             exit(2)
         }
-        let hindi = CommandLine.arguments.contains("--hindi")
-        let config = VoiceConfig.gemini(
+        let config = usesKokoro ? VoiceConfig.kokoro(
+            englishVoice: value("--voice").flatMap(Int.init) ?? KokoroCatalog.defaultEnglishVoice,
+            hindiVoice: value("--voice").flatMap(Int.init) ?? KokoroCatalog.defaultHindiVoice,
+            assistantEffect: false,
+            fallbackIdentifier: ""
+        ) : VoiceConfig.gemini(
             apiKey: key,
             voice: value("--voice") ?? (hindi ? GeminiVoiceWire.hindiAssistantVoice : GeminiVoiceWire.defaultVoice),
             model: value("--model") ?? GeminiVoiceWire.defaultModel,

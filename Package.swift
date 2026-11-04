@@ -11,9 +11,11 @@ let package = Package(
     targets: [
         // Pure logic with no UI or OS-permission dependencies, so it can be unit tested.
         .target(name: "JarvisCore"),
+        // Only the type definitions for Kokoro's library, which is downloaded and loaded at runtime if chosen.
+        .target(name: "CSherpaOnnx"),
         .executableTarget(
             name: "Jarvis",
-            dependencies: ["JarvisCore", .product(name: "Sparkle", package: "Sparkle")],
+            dependencies: ["JarvisCore", "CSherpaOnnx", .product(name: "Sparkle", package: "Sparkle")],
             linkerSettings: [.unsafeFlags([
                 // Weak, so Jarvis still launches on macOS versions without this framework.
                 "-Xlinker", "-weak_framework", "-Xlinker", "FoundationModels",

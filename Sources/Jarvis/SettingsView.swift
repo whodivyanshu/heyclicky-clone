@@ -237,6 +237,7 @@ struct SettingsView: View {
             Picker("", selection: $settings.voiceEngine) {
                 Text("Gemini voice").tag(VoiceEngine.gemini)
                 Text("Mac voice").tag(VoiceEngine.system)
+                Text("Kokoro").tag(VoiceEngine.kokoro)
             }
             .labelsHidden()
             .pickerStyle(.segmented)
@@ -263,6 +264,8 @@ struct SettingsView: View {
                     Row("Voice model") {
                         DarkField(text: $settings.geminiVoiceModel, width: 230)
                     }
+                case .kokoro:
+                    KokoroRows(settings: settings, installer: settings.kokoro)
                 case .system:
                     Row("Voice") {
                         Picker("", selection: $settings.voiceIdentifier) {
@@ -281,9 +284,14 @@ struct SettingsView: View {
                 }
             }
 
-            Note(settings.voiceEngine == .gemini
-                ? "Sounds natural, but takes a few extra seconds to start and is billed to your Gemini key. If a request fails, Jarvis uses the Mac voice for that reply."
-                : "Free, works offline and starts right away. Download a Premium voice in System Settings for a much better sound.")
+            switch settings.voiceEngine {
+            case .gemini:
+                Note("Sounds natural, but takes a few extra seconds to start, has a daily limit and is billed to your Gemini key. If a request fails, Jarvis uses the Mac voice for that reply.")
+            case .kokoro:
+                Note("Free, with no limit from any service, and runs on this Mac once downloaded. Install it, then play a sample in each language to judge it. The first sentence takes longer while the model loads. Until it's installed, Jarvis uses the Mac voice.")
+            case .system:
+                Note("Free, works offline and starts right away. Download a Premium voice in System Settings for a much better sound.")
+            }
         }
     }
 
@@ -478,6 +486,8 @@ struct SettingsView: View {
     private func previewVoice() {
         previewResult = settings.voiceEngine == .gemini && Keychain.geminiKey == nil
             ? "No Gemini key saved, so this is the Mac voice."
+            : settings.voiceEngine == .kokoro && !KokoroFiles.isInstalled
+            ? "Kokoro isn't installed yet, so this is the Mac voice."
             : ""
         preview.voiceConfig = { [settings] in settings.voiceConfig() }
         preview.onVoiceError = { message in previewResult = message }

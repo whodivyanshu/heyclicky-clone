@@ -124,6 +124,7 @@ Say "teach me...", "show me how..." or "walk me through..." and Jarvis circles o
 
 - **Gemini voice** sounds natural and needs your Gemini API key, even if Claude Code is answering. It starts on the first finished sentence, but still takes longer to start than the Mac voice. If a request fails before any sound, Jarvis says why and uses the Mac voice.
 - **Mac voice** is free, works offline and starts right away. It sounds much better with a Premium voice from System Settings.
+- **Kokoro** is free and runs on your Mac, so no service limits how much it speaks. Download it on the Voice page (about 145 MB, Apple silicon only), and Jarvis checks each file's checksum before installing it. It has English and Hindi voices, and picks by the language of each reply. If it fails, Jarvis uses the Mac voice. It isn't included in notarized release builds yet.
 - **Hindi assistant** is a switch on the Voice page. Jarvis listens and replies in Hindi with a deep Gemini voice and a light audio effect. It has an original sound and isn't a copy of any film's dubbed voice. Without a Gemini key it uses the Mac's Hindi voice.
 
 Needs macOS 14 or later and Xcode's command line tools.
@@ -170,6 +171,8 @@ dist/Jarvis.app/Contents/MacOS/Jarvis --ask "Where is Export?" --image shot.jpg 
 dist/Jarvis.app/Contents/MacOS/Jarvis --ask "Search YouTube for cats in Brave" --full-control --model haiku
 # Speak through the Gemini voice (plays aloud):
 dist/Jarvis.app/Contents/MacOS/Jarvis --tts "Hello there" --voice Sulafat
+# Speak through Kokoro once it's installed. --voice is a speaker number:
+dist/Jarvis.app/Contents/MacOS/Jarvis --tts "नमस्ते" --kokoro --voice 33
 # Run an action, or just report which app a name would open:
 dist/Jarvis.app/Contents/MacOS/Jarvis --act "[OPEN_APP:Calculator]"
 dist/Jarvis.app/Contents/MacOS/Jarvis --act "[OPEN_URL:example.com|Brave]"
