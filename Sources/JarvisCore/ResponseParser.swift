@@ -54,7 +54,7 @@ public struct ResponseParser {
         options: [.caseInsensitive]
     )
     private static let actionPattern = try! NSRegularExpression(
-        pattern: #"^\[(OPEN_APP|QUIT_APP|OPEN_URL|FIND_FILE|TYPE|KEY|PLAN|CONFIRM|REMEMBER|FORGET):\s*([^\]\n]+?)\s*\]$"#,
+        pattern: #"^\[(OPEN_APP|QUIT_APP|OPEN_URL|FIND_FILE|TYPE|KEY|PLAN|CONFIRM|REMEMBER|FORGET|EVENTS|REMINDERS|CONTACT|ADD_EVENT|ADD_REMINDER|SHORTCUT|ADD_ROUTINE|REMOVE_ROUTINE|RECALL):\s*([^\]\n]+?)\s*\]$"#,
         options: [.caseInsensitive]
     )
     private static let nonePattern = try! NSRegularExpression(

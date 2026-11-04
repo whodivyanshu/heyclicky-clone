@@ -3,6 +3,7 @@ import ImageIO
 import JarvisCore
 import ScreenCaptureKit
 import UniformTypeIdentifiers
+import Vision
 
 struct CapturedScreen {
     let map: ScreenMap
@@ -90,6 +91,38 @@ enum ScreenCapture {
             pixels += gray
         }
         return pixels
+    }
+
+    /// The text on the cursor's display, read by Vision on this Mac. Jarvis's own windows are left out.
+    @MainActor
+    static func readText() async -> String? {
+        guard Permissions.screen,
+              let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true),
+              let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main,
+              let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+              let display = content.displays.first(where: { $0.displayID == number.uint32Value })
+        else { return nil }
+        let mine = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+        let size = Geometry.fitted(
+            width: Int(screen.frame.width * screen.backingScaleFactor),
+            height: Int(screen.frame.height * screen.backingScaleFactor),
+            maxLongEdge: maxLongEdge
+        )
+        let configuration = SCStreamConfiguration()
+        configuration.width = size.width
+        configuration.height = size.height
+        configuration.showsCursor = false
+        let filter = SCContentFilter(display: display, excludingApplications: mine, exceptingWindows: [])
+        guard let image = try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration) else { return nil }
+        return await Task.detached(priority: .utility) { recognizeText(in: image) }.value
+    }
+
+    private nonisolated static func recognizeText(in image: CGImage) -> String? {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        guard (try? VNImageRequestHandler(cgImage: image).perform([request])) != nil else { return nil }
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
     }
 
     /// Waits for the result of an action to show, for at most `limit` seconds.

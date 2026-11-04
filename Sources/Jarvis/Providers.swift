@@ -54,6 +54,64 @@ struct GeminiProvider: AIProvider {
     }
 }
 
+// MARK: - Ollama (runs on this Mac)
+
+/// A model on this Mac, so screenshots and questions never leave it. The address is fixed to this machine.
+struct OllamaProvider: AIProvider {
+    let model: String
+
+    func stream(_ request: AIRequest) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    try await run(request, continuation)
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: Self.friendly(error))
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func run(_ request: AIRequest, _ continuation: AsyncThrowingStream<String, Error>.Continuation) async throws {
+        guard !model.isEmpty else { throw AIError("Choose an Ollama model in Settings first.") }
+        var http = URLRequest(url: URL(string: OllamaWire.endpoint + "/api/chat")!)
+        http.httpMethod = "POST"
+        // A model that isn't in memory yet can take a while to load.
+        http.timeoutInterval = 180
+        http.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        http.httpBody = try OllamaWire.requestBody(request, model: model)
+
+        let (bytes, response) = try await URLSession.shared.bytes(for: http)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else {
+            var body = ""
+            for try await line in bytes.lines { body += line }
+            throw AIError("Ollama: " + (OllamaWire.errorMessage(fromBody: body) ?? "HTTP \(status)"))
+        }
+        for try await line in bytes.lines {
+            if let text = try OllamaWire.text(fromLine: line) { continuation.yield(text) }
+        }
+    }
+
+    /// The models installed on this Mac, or nil if Ollama isn't running.
+    static func installedModels() async -> [String]? {
+        var request = URLRequest(url: URL(string: OllamaWire.endpoint + "/api/tags")!)
+        request.timeoutInterval = 3
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200
+        else { return nil }
+        return OllamaWire.modelNames(fromTags: data)
+    }
+
+    private static func friendly(_ error: Error) -> Error {
+        if error is AIError || error is CancellationError { return error }
+        if (error as? URLError)?.code == .cancelled { return CancellationError() }
+        return AIError("Couldn't reach Ollama. Check that it's running on this Mac.")
+    }
+}
+
 // MARK: - Claude Code (your local login)
 
 /// Runs the installed `claude` CLI, which handles its own login. Jarvis never reads Claude's credentials.

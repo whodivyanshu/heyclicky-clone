@@ -9,9 +9,14 @@ final class HotkeyMonitor {
     var onPress: () -> Void = {}
     var onRelease: () -> Void = {}
     var onEscape: () -> Void = {}
+    /// Nil turns dictation off.
+    var dictationHotkey: () -> CGEventFlags? = { nil }
+    var onDictationPress: () -> Void = {}
+    var onDictationRelease: () -> Void = {}
 
     private var timer: Timer?
     private var isHeld = false
+    private var isDictationHeld = false
     private var escapeWasDown = false
     private static let watched: CGEventFlags = [.maskControl, .maskAlternate, .maskCommand, .maskShift]
     private static let escapeKeyCode: CGKeyCode = 53
@@ -30,6 +35,12 @@ final class HotkeyMonitor {
         if down != isHeld {
             isHeld = down
             if down { onPress() } else { onRelease() }
+        }
+
+        let dictating = dictationHotkey().map { pressed == $0 } ?? false
+        if dictating != isDictationHeld {
+            isDictationHeld = dictating
+            if dictating { onDictationPress() } else { onDictationRelease() }
         }
 
         let escapeDown = CGEventSource.keyState(.combinedSessionState, key: Self.escapeKeyCode)

@@ -16,6 +16,10 @@
     <key>LSUIElement</key><true/>
     <key>NSMicrophoneUsageDescription</key><string>Jarvis listens while you hold the talk shortcut.</string>
     <key>NSSpeechRecognitionUsageDescription</key><string>Jarvis turns what you say into text while you hold the talk shortcut.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key><string>Jarvis reads and adds calendar events when you ask it to.</string>
+    <key>NSRemindersFullAccessUsageDescription</key><string>Jarvis reads and adds reminders when you ask it to.</string>
+    <key>NSContactsUsageDescription</key><string>Jarvis looks up someone's details when you ask it to.</string>
+    <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
     <key>NSScreenCaptureUsageDescription</key><string>Jarvis looks at your screen when you ask it something, so it can answer and point at things.</string>
 </dict>
 </plist>

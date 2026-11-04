@@ -9,6 +9,8 @@ struct ActionResult {
     var failure: String?
     /// During a job the model can try another way after this failure. Safety refusals are never retried.
     var retryable = false
+    /// What was looked up, which goes back to the model and isn't shown or spoken as it is.
+    var data: String?
 }
 
 /// Carries out the actions a reply asks for.
@@ -24,9 +26,20 @@ enum ActionRunner {
         case .pressKey: "Pressing \(tag.value)…"
         case .copy: "Copying…"
         case .paste: "Pasting…"
-        case .plan, .confirm, .remember, .forget: ""
+        case .events: "Checking your calendar…"
+        case .reminders: "Checking your reminders…"
+        case .contact: "Looking up \(tag.value)…"
+        case .addEvent: "Adding that to your calendar…"
+        case .addReminder: "Adding that reminder…"
+        case .draftMail: "Starting that email…"
+        case .shortcut: "Running \(tag.value)…"
+        case .recall: "Searching your screen memory…"
+        case .plan, .confirm, .remember, .forget, .addRoutine, .removeRoutine: ""
         }
     }
+
+    /// Their lists of apps Jarvis may and may not click or type in.
+    static var appPolicy: () -> AppAccessPolicy = { AppAccessPolicy() }
 
     static func run(_ tag: ActionTag) async -> ActionResult {
         switch tag.kind {
@@ -39,7 +52,8 @@ enum ActionRunner {
         case .copy: copy(tag.value)
         case .paste: await paste(tag.value)
         // The coordinator handles these, since they don't touch the Mac.
-        case .plan, .confirm, .remember, .forget: ActionResult(summary: "")
+        case .events, .reminders, .contact, .addEvent, .addReminder, .draftMail, .shortcut: await NativeServices.run(tag)
+        case .plan, .confirm, .remember, .forget, .addRoutine, .removeRoutine, .recall: ActionResult(summary: "")
         }
     }
 
@@ -62,6 +76,9 @@ enum ActionRunner {
         let location = Geometry.quartzPoint(appKit: point, primaryHeight: primary.frame.height)
 
         if let owner = frontWindow(at: location) {
+            if let appName = owner.app.localizedName, !appPolicy().permits(appName: appName) {
+                return ActionResult(summary: "Left \(appName) to you", failure: "You've told me not to use \(appName), so that one's yours to do.")
+            }
             if protectedApps.contains(owner.app.bundleIdentifier ?? "") {
                 let appName = owner.app.localizedName ?? "that window"
                 return ActionResult(
@@ -153,7 +170,16 @@ enum ActionRunner {
             let name = app.localizedName ?? "that app"
             return ActionResult(summary: "Left \(name) to you", failure: "I don't type in \(name), so that one's yours to do.")
         }
+        if let name = app.localizedName, !appPolicy().permits(appName: name) {
+            return ActionResult(summary: "Left \(name) to you", failure: "You've told me not to use \(name), so that one's yours to do.")
+        }
         return nil
+    }
+
+    /// A terminal panel inside another app. This reads through Accessibility, so it runs once per step rather than per letter.
+    private static func terminalRefusal() -> ActionResult? {
+        guard RiskRules.isTerminalPane(UIInspector.keyContext()) else { return nil }
+        return ActionResult(summary: "Left the terminal to you", failure: "The keyboard is in a terminal, where typing could run a command, so that one's yours to do.")
     }
 
     private static func type(_ text: String) async -> ActionResult {
@@ -162,6 +188,7 @@ enum ActionRunner {
             return ActionResult(summary: "Nothing to type")
         }
         try? await Task.sleep(nanoseconds: keyboardSettle)
+        if let refusal = terminalRefusal() { return refusal }
         let source = CGEventSource(stateID: .hidSystemState)
         for character in text {
             guard !Task.isCancelled else { return ActionResult(summary: "") }
@@ -186,7 +213,7 @@ enum ActionRunner {
         }
         try? await Task.sleep(nanoseconds: keyboardSettle)
         guard !Task.isCancelled else { return ActionResult(summary: "") }
-        if let refusal = keyboardRefusal() { return refusal }
+        if let refusal = keyboardRefusal() ?? terminalRefusal() { return refusal }
 
         var flags: CGEventFlags = []
         if combo.modifiers.contains(.command) { flags.insert(.maskCommand) }
@@ -230,7 +257,7 @@ enum ActionRunner {
         try? await Task.sleep(nanoseconds: keyboardSettle)
         guard !Task.isCancelled else { return ActionResult(summary: "") }
         // Focus can move during the wait.
-        if let refusal = keyboardRefusal() { return refusal }
+        if let refusal = keyboardRefusal() ?? terminalRefusal() { return refusal }
         let source = CGEventSource(stateID: .hidSystemState)
         for isDown in [true, false] {
             guard let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: isDown) else { continue }
@@ -238,6 +265,57 @@ enum ActionRunner {
             event.post(tap: .cghidEventTap)
         }
         return ActionResult(summary: "Pasted \"\(text.prefix(40))\"")
+    }
+
+    // MARK: - Dictation
+
+    /// Pastes what they just dictated, then puts their clipboard back. Unlike Jarvis's own typing this is
+    /// allowed in terminals, because it's their words and Return isn't pressed. Password fields are still refused.
+    static func insertDictation(_ text: String) async -> ActionResult {
+        if let missing = missingAccessibility() { return missing }
+        if IsSecureEventInputEnabled() {
+            return ActionResult(summary: "Left that field to you", failure: "That looks like a password field, so I didn't paste into it.")
+        }
+        let board = NSPasteboard.general
+        let saved = (board.pasteboardItems ?? []).map { item in
+            item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+        }
+        board.clearContents()
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        // Asks clipboard managers not to keep this, since it's only passing through.
+        item.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
+        board.writeObjects([item])
+        let written = board.changeCount
+
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        guard !IsSecureEventInputEnabled() else {
+            restore(saved, ifStill: written)
+            return ActionResult(summary: "Left that field to you", failure: "That looks like a password field, so I didn't paste into it.")
+        }
+        let source = CGEventSource(stateID: .hidSystemState)
+        for isDown in [true, false] {
+            guard let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: isDown) else { continue }
+            event.flags = .maskCommand
+            event.post(tap: .cghidEventTap)
+        }
+        // The app reads the clipboard when it handles the paste, so this has to wait for that.
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        restore(saved, ifStill: written)
+        return ActionResult(summary: "Dictated")
+    }
+
+    private static func restore(_ saved: [[(NSPasteboard.PasteboardType, Data)]], ifStill changeCount: Int) {
+        let board = NSPasteboard.general
+        // If they've copied something else since, that's what they want to keep.
+        guard board.changeCount == changeCount else { return }
+        board.clearContents()
+        guard !saved.isEmpty else { return }
+        board.writeObjects(saved.map { types in
+            let item = NSPasteboardItem()
+            for (type, data) in types { item.setData(data, forType: type) }
+            return item
+        })
     }
 
     // MARK: - Apps

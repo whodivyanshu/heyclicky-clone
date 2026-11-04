@@ -8,7 +8,7 @@ import Security
 import Speech
 
 enum ProviderChoice: String, CaseIterable, Identifiable {
-    case claudeCode, gemini, appleIntelligence
+    case claudeCode, gemini, appleIntelligence, ollama
     var id: String { rawValue }
 
     var title: String {
@@ -16,6 +16,7 @@ enum ProviderChoice: String, CaseIterable, Identifiable {
         case .claudeCode: "Claude Code (local login)"
         case .gemini: "Gemini (API key)"
         case .appleIntelligence: "Apple Intelligence"
+        case .ollama: "Ollama (on this Mac)"
         }
     }
 }
@@ -53,6 +54,33 @@ enum HotkeyChoice: String, CaseIterable, Identifiable {
         case .optionCommand: [.maskAlternate, .maskCommand]
         }
     }
+}
+
+enum DictationHotkey: String, CaseIterable, Identifiable {
+    case off, controlShift, optionShift
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .off: "Off"
+        case .controlShift: "⌃ Control + ⇧ Shift"
+        case .optionShift: "⌥ Option + ⇧ Shift"
+        }
+    }
+
+    var flags: CGEventFlags? {
+        switch self {
+        case .off: nil
+        case .controlShift: [.maskControl, .maskShift]
+        case .optionShift: [.maskAlternate, .maskShift]
+        }
+    }
+}
+
+enum DictationLanguage: String, CaseIterable, Identifiable {
+    case system, hindi
+    var id: String { rawValue }
+    var title: String { self == .system ? "System language" : "Hindi, and Hindi with English" }
 }
 
 /// The facts Jarvis keeps between launches, in a private file on this Mac.
@@ -107,6 +135,11 @@ final class AppSettings: ObservableObject {
     static let onboardedKey = "onboarded"
 
     let memory = MemoryStore()
+    @MainActor let conversations = ConversationStore()
+    @MainActor let activity = ActivityStore()
+    @MainActor let routines = RoutineStore()
+    @MainActor let meetings = MeetingStore()
+    @MainActor let screenMemory = ScreenMemoryStore()
 
     @Published var provider: ProviderChoice { didSet { save(provider.rawValue, "provider") } }
     @Published var hotkey: HotkeyChoice { didSet { save(hotkey.rawValue, "hotkey") } }
@@ -132,6 +165,31 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    @Published var ollamaModel: String { didSet { save(ollamaModel, "ollamaModel") } }
+    /// These three open the microphone or read the screen without being asked, so they stay off until chosen.
+    @Published var wakeWordEnabled: Bool { didSet { UserDefaults.standard.set(wakeWordEnabled, forKey: "wakeWordEnabled") } }
+    @Published var followUpEnabled: Bool { didSet { UserDefaults.standard.set(followUpEnabled, forKey: "followUpEnabled") } }
+    @Published var screenWatchEnabled: Bool { didSet { UserDefaults.standard.set(screenWatchEnabled, forKey: "screenWatchEnabled") } }
+    @Published var saveConversations: Bool { didSet { UserDefaults.standard.set(saveConversations, forKey: "saveConversations") } }
+    @Published var keepActivityLog: Bool { didSet { UserDefaults.standard.set(keepActivityLog, forKey: "keepActivityLog") } }
+    /// Screenshots can show anything, so they're only kept if asked for.
+    @Published var keepActivityScreenshots: Bool { didSet { UserDefaults.standard.set(keepActivityScreenshots, forKey: "keepActivityScreenshots") } }
+    @Published var appPolicy: AppAccessPolicy {
+        didSet { UserDefaults.standard.set(try? JSONEncoder().encode(appPolicy), forKey: "appPolicy") }
+    }
+
+    @Published var dictationHotkey: DictationHotkey { didSet { save(dictationHotkey.rawValue, "dictationHotkey") } }
+    @Published var dictationLanguage: DictationLanguage { didSet { save(dictationLanguage.rawValue, "dictationLanguage") } }
+    /// Off by default, because the on-device tidy-up is free and this sends what they said to the AI.
+    @Published var dictationCleanup: Bool { didSet { UserDefaults.standard.set(dictationCleanup, forKey: "dictationCleanup") } }
+    @Published var bargeInEnabled: Bool { didSet { UserDefaults.standard.set(bargeInEnabled, forKey: "bargeInEnabled") } }
+    @Published var teachingEnabled: Bool { didSet { UserDefaults.standard.set(teachingEnabled, forKey: "teachingEnabled") } }
+    /// Keeps text from the screen on disk, so it stays off until chosen.
+    @Published var screenMemoryEnabled: Bool { didSet { UserDefaults.standard.set(screenMemoryEnabled, forKey: "screenMemoryEnabled") } }
+    @Published var screenMemoryDays: Int { didSet { UserDefaults.standard.set(screenMemoryDays, forKey: "screenMemoryDays") } }
+
+    var dictationLocale: Locale? { dictationLanguage == .hindi ? Locale(identifier: "hi-IN") : listeningLocale }
+
     var listeningLocale: Locale? { hindiAssistant ? Locale(identifier: "hi-IN") : nil }
 
     /// This model gets a short prompt and limited actions. See `OnDeviceRules`.
@@ -152,6 +210,21 @@ final class AppSettings: ObservableObject {
         geminiVoice = defaults.string(forKey: "geminiVoice") ?? GeminiVoiceWire.defaultVoice
         geminiVoiceModel = defaults.string(forKey: "geminiVoiceModel") ?? GeminiVoiceWire.defaultModel
         hindiAssistant = defaults.bool(forKey: "hindiAssistant")
+        ollamaModel = defaults.string(forKey: "ollamaModel") ?? ""
+        dictationHotkey = defaults.string(forKey: "dictationHotkey").flatMap(DictationHotkey.init) ?? .off
+        dictationLanguage = defaults.string(forKey: "dictationLanguage").flatMap(DictationLanguage.init) ?? .system
+        dictationCleanup = defaults.bool(forKey: "dictationCleanup")
+        bargeInEnabled = defaults.bool(forKey: "bargeInEnabled")
+        teachingEnabled = defaults.object(forKey: "teachingEnabled") as? Bool ?? true
+        screenMemoryEnabled = defaults.bool(forKey: "screenMemoryEnabled")
+        screenMemoryDays = defaults.object(forKey: "screenMemoryDays") as? Int ?? 7
+        wakeWordEnabled = defaults.bool(forKey: "wakeWordEnabled")
+        followUpEnabled = defaults.bool(forKey: "followUpEnabled")
+        screenWatchEnabled = defaults.bool(forKey: "screenWatchEnabled")
+        saveConversations = defaults.object(forKey: "saveConversations") as? Bool ?? true
+        keepActivityLog = defaults.object(forKey: "keepActivityLog") as? Bool ?? true
+        keepActivityScreenshots = defaults.bool(forKey: "keepActivityScreenshots")
+        appPolicy = defaults.data(forKey: "appPolicy").flatMap { try? JSONDecoder().decode(AppAccessPolicy.self, from: $0) } ?? AppAccessPolicy()
     }
 
     /// Without a saved key, a Gemini voice selection uses the Mac voice.
@@ -186,6 +259,8 @@ final class AppSettings: ObservableObject {
             return GeminiProvider(apiKey: key, model: geminiModel)
         case .appleIntelligence:
             return AppleIntelligenceProvider(location: appleLocation, locale: listeningLocale)
+        case .ollama:
+            return OllamaProvider(model: ollamaModel)
         }
     }
 }

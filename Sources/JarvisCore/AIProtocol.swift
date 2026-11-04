@@ -95,6 +95,46 @@ public enum GeminiWire {
     }
 }
 
+// MARK: - Ollama
+
+/// A model running on this Mac through Ollama, using its chat API.
+public enum OllamaWire {
+    public static let endpoint = "http://127.0.0.1:11434"
+
+    public static func requestBody(_ request: AIRequest, model: String) throws -> Data {
+        var messages: [[String: Any]] = [["role": "system", "content": request.system]]
+        for turn in request.history {
+            messages.append(["role": "user", "content": turn.user])
+            messages.append(["role": "assistant", "content": turn.assistant])
+        }
+        var latest: [String: Any] = ["role": "user", "content": request.userText]
+        if !request.jpegImages.isEmpty {
+            latest["images"] = request.jpegImages.map { $0.base64EncodedString() }
+        }
+        messages.append(latest)
+        return try JSONSerialization.data(withJSONObject: ["model": model, "stream": true, "messages": messages] as [String: Any])
+    }
+
+    /// Answer text from one line of the response, or nil if it has none.
+    public static func text(fromLine line: String) throws -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { return nil }
+        if let message = object["error"] as? String { throw AIError("Ollama: \(message)") }
+        let text = (object["message"] as? [String: Any])?["content"] as? String
+        return text?.isEmpty == false ? text : nil
+    }
+
+    public static func errorMessage(fromBody body: String) -> String? {
+        (try? JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any])?["error"] as? String
+    }
+
+    /// The installed model names from `/api/tags`.
+    public static func modelNames(fromTags data: Data) -> [String] {
+        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let models = object?["models"] as? [[String: Any]] ?? []
+        return models.compactMap { $0["name"] as? String }
+    }
+}
+
 // MARK: - Claude Code
 
 public enum ClaudeCodeWire {

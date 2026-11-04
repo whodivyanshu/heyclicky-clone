@@ -9,13 +9,16 @@ public struct KeyContext: Equatable, Sendable {
     public var focusedLabel: String
     /// The button Return would press in the focused window.
     public var defaultButton: String
+    /// Labels of the elements around the focused one, nearest first. Terminals often only name themselves here.
+    public var surroundingLabels: [String]
 
-    public init(appName: String = "", windowTitle: String = "", focusedRole: String = "", focusedLabel: String = "", defaultButton: String = "") {
+    public init(appName: String = "", windowTitle: String = "", focusedRole: String = "", focusedLabel: String = "", defaultButton: String = "", surroundingLabels: [String] = []) {
         self.appName = appName
         self.windowTitle = windowTitle
         self.focusedRole = focusedRole
         self.focusedLabel = focusedLabel
         self.defaultButton = defaultButton
+        self.surroundingLabels = surroundingLabels
     }
 }
 
@@ -31,6 +34,19 @@ public enum RiskRules {
     private static let messagingApps = ["whatsapp", "messages", "slack", "telegram", "discord", "signal", "teams", "mail", "outlook", "messenger", "wechat"]
     /// Page titles in a browser. Only names distinctive enough not to show up in ordinary page titles.
     private static let messagingSites = ["whatsapp", "gmail", "slack", "telegram", "discord", "outlook", "messenger", "linkedin", "instagram"]
+
+    private static let terminalWords = try! NSRegularExpression(
+        pattern: #"\b(terminal|xterm|console|zsh|bash|fish|powershell|pwsh|command prompt)\b"#,
+        options: [.caseInsensitive]
+    )
+
+    /// A terminal panel inside another app, such as VS Code, where typed text could run as a command.
+    /// It can refuse a text box that merely has one of these names, which only costs them typing it themselves.
+    public static func isTerminalPane(_ context: KeyContext) -> Bool {
+        ([context.focusedLabel] + context.surroundingLabels).contains { label in
+            terminalWords.firstMatch(in: label, range: NSRange(label.startIndex..., in: label)) != nil
+        }
+    }
 
     private static let returnKey: UInt16 = 36
     private static let deleteKeys: Set<UInt16> = [51, 117]

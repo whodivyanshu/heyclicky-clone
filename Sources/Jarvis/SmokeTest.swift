@@ -1,7 +1,7 @@
 import Foundation
 import JarvisCore
 
-/// `Jarvis --ask "question" [--image file.jpg] [--provider claude|gemini|apple|apple-cloud] [--model name] [--full-control] [--hindi]`
+/// `Jarvis --ask "question" [--image file.jpg] [--provider claude|gemini|apple|apple-cloud|ollama] [--model name] [--full-control] [--hindi]`
 /// Sends one request through the real provider and parser, then prints the resulting beats.
 enum SmokeTest {
     private static func value(_ flag: String) -> String? {
@@ -64,6 +64,7 @@ enum SmokeTest {
                 Task {
                     let result = await ActionRunner.run(tag)
                     print(result.summary, result.failure.map { "| says: \($0)" } ?? "")
+                    if let data = result.data { print(data) }
                     exit(0)
                 }
             }
@@ -93,6 +94,8 @@ enum SmokeTest {
                 exit(2)
             }
             provider = GeminiProvider(apiKey: key, model: value("--model") ?? AppSettings.defaultGeminiModel)
+        case "ollama":
+            provider = OllamaProvider(model: value("--model") ?? "")
         case "apple":
             provider = AppleIntelligenceProvider(location: .onDevice, locale: hindiLocale)
         case "apple-cloud":

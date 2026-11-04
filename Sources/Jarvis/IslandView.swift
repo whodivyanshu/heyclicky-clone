@@ -129,16 +129,19 @@ struct IslandView: View {
     private static let shoulder: CGFloat = 10
 
     private var isVisible: Bool {
-        model.isOpen || model.phase != .resting || settings.showIslandWhenIdle
+        model.isOpen || model.phase != .resting || settings.showIslandWhenIdle || model.isRecordingMeeting
     }
 
     private var width: CGFloat {
         if model.isOpen { return 500 }
         switch model.phase {
-        case .resting: return model.hasHardwareNotch ? model.notchWidth : 118
+        case .resting:
+            // The notch would hide a recording dot, so the island grows past it.
+            if model.isRecordingMeeting { return (model.hasHardwareNotch ? model.notchWidth : 118) + 48 }
+            return model.hasHardwareNotch ? model.notchWidth : 118
         case .thinking: return max(320, model.notchWidth + 180)
         case .listening: return max(380, model.notchWidth + 180)
-        case .speaking, .guiding, .confirming, .message: return max(440, model.notchWidth + 180)
+        case .speaking, .guiding, .confirming, .message, .offering: return max(440, model.notchWidth + 180)
         }
     }
 
@@ -207,7 +210,14 @@ struct IslandView: View {
 
     private var header: some View {
         HStack(spacing: 0) {
-            if model.phase == .resting {
+            if model.phase == .resting, model.isRecordingMeeting {
+                Spacer()
+                Circle()
+                    .fill(.red)
+                    .frame(width: 9, height: 9)
+                    .padding(.trailing, 14)
+                    .help("Taking meeting notes")
+            } else if model.phase == .resting {
                 if !model.hasHardwareNotch {
                     Spacer()
                     SparkShape()
@@ -246,6 +256,9 @@ struct IslandView: View {
         case .message:
             Image(systemName: "exclamationmark.circle.fill")
                 .foregroundStyle(JarvisStyle.amber)
+        case .offering:
+            Image(systemName: "lightbulb.fill")
+                .foregroundStyle(JarvisStyle.amber)
         case .resting:
             EmptyView()
         }
@@ -283,7 +296,44 @@ struct IslandView: View {
             confirmation
         case .message:
             bodyText(model.message, dim: false)
+        case .offering:
+            offer
         }
+    }
+
+    /// Shows only a generic description, and nothing goes to the AI unless they accept.
+    private var offer: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(model.offerTitle). Want me to take a look?")
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button(action: model.onAcceptOffer) {
+                    Text("Take a look")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 14)
+                        .frame(height: 28)
+                        .background(.white, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                Button(action: model.onDismissOffer) {
+                    Text("Not now")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .frame(height: 28)
+                        .background(.white.opacity(0.14), in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.top, 2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 18)
+        .padding(.bottom, 14)
+        .transition(.opacity)
     }
 
     private var confirmation: some View {

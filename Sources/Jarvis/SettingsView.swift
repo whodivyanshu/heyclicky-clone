@@ -7,7 +7,15 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case general = "General"
     case voice = "Voice"
     case ai = "AI"
+    case handsFree = "Hands-free"
+    case routines = "Routines"
+    case meetings = "Meetings"
+    case teaching = "Teaching"
+    case screenMemory = "Screen memory"
     case memory = "Memory"
+    case history = "History"
+    case activity = "Activity"
+    case safety = "Safety"
     case permissions = "Permissions"
 
     var id: String { rawValue }
@@ -17,13 +25,21 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: "slider.horizontal.3"
         case .voice: "waveform"
         case .ai: "sparkle"
+        case .handsFree: "ear"
+        case .routines: "clock.arrow.2.circlepath"
+        case .meetings: "person.2"
+        case .teaching: "graduationcap"
+        case .screenMemory: "magnifyingglass"
         case .memory: "brain"
+        case .history: "text.bubble"
+        case .activity: "list.bullet.rectangle"
+        case .safety: "hand.raised"
         case .permissions: "lock.shield"
         }
     }
 }
 
-private enum Palette {
+enum Palette {
     static let background = Color.black
     static let sidebar = Color(white: 0.055)
     static let card = Color(white: 0.09)
@@ -33,7 +49,7 @@ private enum Palette {
 }
 
 struct SettingsView: View {
-    static let size = CGSize(width: 780, height: 520)
+    static let size = CGSize(width: 780, height: 620)
 
     @ObservedObject var settings: AppSettings
     @State private var tab: SettingsTab
@@ -47,6 +63,9 @@ struct SettingsView: View {
     @State private var speechGranted = Permissions.speech
     @State private var screenGranted = Permissions.screen
     @State private var accessibilityGranted = Permissions.accessibility
+    @State private var calendarGranted = NativeServices.hasCalendar
+    @State private var remindersGranted = NativeServices.hasReminders
+    @State private var contactsGranted = NativeServices.hasContacts
 
     private let refresh = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     private let voices = SpeechOutput.bestVoices()
@@ -87,13 +106,16 @@ struct SettingsView: View {
             speechGranted = Permissions.speech
             screenGranted = Permissions.screen
             accessibilityGranted = Permissions.accessibility
+            calendarGranted = NativeServices.hasCalendar
+            remindersGranted = NativeServices.hasReminders
+            contactsGranted = NativeServices.hasContacts
         }
     }
 
     // MARK: - Sidebar
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 10) {
                 Image(nsImage: NSApp.applicationIconImage)
                     .resizable()
@@ -102,8 +124,8 @@ struct SettingsView: View {
                     .font(.system(size: 16, weight: .semibold))
             }
             .padding(.horizontal, 8)
-            .padding(.top, 42)
-            .padding(.bottom, 16)
+            .padding(.top, 38)
+            .padding(.bottom, 10)
 
             ForEach(SettingsTab.allCases) { item in
                 Button { tab = item } label: {
@@ -124,7 +146,7 @@ struct SettingsView: View {
                     }
                     .foregroundStyle(tab == item ? Color.white : Palette.secondary)
                     .padding(.horizontal, 10)
-                    .frame(height: 34)
+                    .frame(height: 31)
                     .background(tab == item ? Palette.selected : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .contentShape(Rectangle())
                 }
@@ -157,7 +179,15 @@ struct SettingsView: View {
         case .general: generalPage
         case .voice: voicePage
         case .ai: aiPage
+        case .handsFree: HandsFreePage(settings: settings)
+        case .routines: RoutinesPage(routines: settings.routines)
+        case .meetings: MeetingsPage(meetings: settings.meetings, settings: settings)
+        case .teaching: TeachingPage(settings: settings)
+        case .screenMemory: ScreenMemoryPage(settings: settings, memory: settings.screenMemory)
         case .memory: MemoryPage(memory: settings.memory)
+        case .history: HistoryPage(settings: settings, conversations: settings.conversations)
+        case .activity: ActivityPage(settings: settings, activity: settings.activity)
+        case .safety: SafetyPage(settings: settings)
         case .permissions: permissionsPage
         }
     }
@@ -177,6 +207,8 @@ struct SettingsView: View {
                     .labelsHidden()
                     .fixedSize()
                 }
+                Divider().overlay(Palette.line)
+                LaunchAtLoginRow()
                 Divider().overlay(Palette.line)
                 Row("Show the island when idle", detail: "Hover over it to chat or type a question") {
                     Toggle("", isOn: $settings.showIslandWhenIdle)
@@ -261,6 +293,7 @@ struct SettingsView: View {
                 Text("Claude Code").tag(ProviderChoice.claudeCode)
                 Text("Gemini").tag(ProviderChoice.gemini)
                 Text("Apple Intelligence").tag(ProviderChoice.appleIntelligence)
+                Text("Ollama").tag(ProviderChoice.ollama)
             }
             .labelsHidden()
             .pickerStyle(.segmented)
@@ -291,6 +324,8 @@ struct SettingsView: View {
                         .labelsHidden()
                         .fixedSize()
                     }
+                case .ollama:
+                    OllamaRow(settings: settings)
                 }
                 if settings.provider == .gemini || settings.voiceEngine == .gemini {
                     Divider().overlay(Palette.line)
@@ -307,7 +342,9 @@ struct SettingsView: View {
                 }
             }
 
-            if settings.provider == .claudeCode {
+            if settings.provider == .ollama {
+                Note("Runs on this Mac, so your screenshots and questions stay here. Pointing and clicking need a model that can read images, and are usually less accurate than the online models.")
+            } else if settings.provider == .claudeCode {
                 Note("Uses the claude command and your existing login. Requests count toward your Claude plan.")
             } else if settings.provider == .appleIntelligence {
                 Note(settings.appleLocation == .onDevice
@@ -320,7 +357,7 @@ struct SettingsView: View {
     private var permissionsPage: some View {
         VStack(alignment: .leading, spacing: 18) {
             Card {
-                permissionRow("Microphone", detail: "Hears you while you hold the shortcut", symbol: "mic", granted: micGranted) {
+                permissionRow("Microphone", detail: "Hears you when you talk to Jarvis", symbol: "mic", granted: micGranted) {
                     Task {
                         if await !Permissions.requestMicrophone() {
                             Permissions.openSettings(for: "Privacy_Microphone")
@@ -342,6 +379,24 @@ struct SettingsView: View {
                 Divider().overlay(Palette.line)
                 permissionRow("Accessibility", detail: "Lets Jarvis click, type, and read your selected text and the app's buttons", symbol: "cursorarrow.click", granted: accessibilityGranted) {
                     Permissions.requestAccessibility()
+                }
+                Divider().overlay(Palette.line)
+                permissionRow("Calendar", detail: "Reads and adds events when you ask. Optional", symbol: "calendar", granted: calendarGranted) {
+                    Task {
+                        if await !NativeServices.requestCalendar() { Permissions.openSettings(for: "Privacy_Calendars") }
+                    }
+                }
+                Divider().overlay(Palette.line)
+                permissionRow("Reminders", detail: "Reads and adds reminders when you ask. Optional", symbol: "checklist", granted: remindersGranted) {
+                    Task {
+                        if await !NativeServices.requestReminders() { Permissions.openSettings(for: "Privacy_Reminders") }
+                    }
+                }
+                Divider().overlay(Palette.line)
+                permissionRow("Contacts", detail: "Looks up someone's details when you ask. Optional", symbol: "person.crop.circle", granted: contactsGranted) {
+                    Task {
+                        if await !NativeServices.requestContacts() { Permissions.openSettings(for: "Privacy_Contacts") }
+                    }
                 }
             }
             Note(screenGranted
@@ -484,7 +539,7 @@ private struct MemoryPage: View {
     }
 }
 
-private struct Card<Content: View>: View {
+struct Card<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -494,7 +549,7 @@ private struct Card<Content: View>: View {
     }
 }
 
-private struct Row<Control: View>: View {
+struct Row<Control: View>: View {
     let title: String
     let detail: String?
     @ViewBuilder let control: Control
@@ -528,7 +583,7 @@ private struct Row<Control: View>: View {
 }
 
 /// A switch in the app's black and white: a white track with a black knob when on.
-private struct MonoSwitch: ToggleStyle {
+struct MonoSwitch: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         Button { configuration.isOn.toggle() } label: {
             Capsule()
@@ -547,7 +602,7 @@ private struct MonoSwitch: ToggleStyle {
     }
 }
 
-private struct Note: View {
+struct Note: View {
     let text: String
     init(_ text: String) { self.text = text }
 
@@ -560,7 +615,7 @@ private struct Note: View {
     }
 }
 
-private struct DarkField: View {
+struct DarkField: View {
     @Binding var text: String
     let width: CGFloat
     var isSecure = false
@@ -587,7 +642,7 @@ private struct DarkField: View {
     }
 }
 
-private struct OutlineButton: View {
+struct OutlineButton: View {
     let title: String
     var symbol: String?
     var isEnabled = true

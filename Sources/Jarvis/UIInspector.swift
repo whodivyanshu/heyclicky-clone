@@ -120,6 +120,12 @@ enum UIInspector {
         if let focused = element(root, kAXFocusedUIElementAttribute) {
             context.focusedRole = [kAXRoleAttribute, kAXSubroleAttribute].compactMap { string(focused, $0) }.joined(separator: " ")
             context.focusedLabel = (ownLabels(focused) + [string(focused, kAXPlaceholderValueAttribute)].compactMap { $0 }).joined(separator: " ")
+            var parent = element(focused, kAXParentAttribute)
+            for _ in 0..<6 {
+                guard let current = parent, string(current, kAXRoleAttribute) != "AXWindow" else { break }
+                context.surroundingLabels += ownLabels(current)
+                parent = element(current, kAXParentAttribute)
+            }
         }
         return context
     }

@@ -104,7 +104,7 @@ final class IslandController {
             width: size.width,
             height: size.height
         )
-        let isHidden = model.phase == .resting && !model.isOpen && !settings.showIslandWhenIdle
+        let isHidden = model.phase == .resting && !model.isOpen && !settings.showIslandWhenIdle && !model.isRecordingMeeting
         let isOver = !isHidden && area.contains(mouse)
 
         if panel.ignoresMouseEvents == isOver {

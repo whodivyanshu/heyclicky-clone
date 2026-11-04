@@ -8,11 +8,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var island: IslandController?
     private var statusItem: NSStatusItem?
     private var settingsWindow: NSWindow?
+    private let updater = Updater()
+    private var meetingItem: NSMenuItem?
+    private var isRecordingMeeting = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let coordinator = Coordinator(settings: settings)
         coordinator.openSettings = { [weak self] in self?.showSettings() }
         coordinator.onModeChange = { [weak self] in self?.updateIcon($0) }
+        coordinator.onMeetingChange = { [weak self] recording in
+            self?.isRecordingMeeting = recording
+            self?.meetingItem?.title = recording ? "Stop Meeting Notes" : "Start Meeting Notes"
+            self?.updateIcon(.idle)
+        }
         coordinator.start()
         self.coordinator = coordinator
 
@@ -46,6 +54,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettingsMenu), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
+        let meeting = NSMenuItem(title: "Start Meeting Notes", action: #selector(toggleMeeting), keyEquivalent: "")
+        meeting.target = self
+        menu.addItem(meeting)
+        meetingItem = meeting
+        if updater.canCheck {
+            let updates = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+            updates.target = self
+            menu.addItem(updates)
+        }
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Jarvis", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = menu
@@ -56,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateIcon(_ mode: CompanionMode) {
         let symbol: String
         switch mode {
-        case .idle: symbol = "sparkle"
+        case .idle: symbol = isRecordingMeeting ? "record.circle.fill" : "sparkle"
         case .listening: symbol = "mic.fill"
         case .thinking: symbol = "ellipsis.circle"
         case .speaking: symbol = "waveform"
@@ -64,6 +81,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Jarvis")
     }
 
+
+    @objc private func toggleMeeting() {
+        coordinator?.toggleMeeting()
+    }
+
+    @objc private func checkForUpdates() {
+        updater.check()
+    }
 
     @objc private func openSettingsMenu() {
         showSettings()

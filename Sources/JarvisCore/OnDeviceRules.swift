@@ -68,7 +68,9 @@ public enum OnDeviceRules {
             return said.contains("remember")
         case .forget:
             return said.contains("forget")
-        case .typeText, .pressKey, .paste, .plan, .confirm:
+        // This model only gets the tags listed in its prompt, which keeps it from reaching personal data.
+        case .typeText, .pressKey, .paste, .plan, .confirm, .events, .reminders, .contact,
+             .addEvent, .addReminder, .draftMail, .shortcut, .addRoutine, .removeRoutine, .recall:
             return false
         }
     }
@@ -96,7 +98,8 @@ public enum OnDeviceRules {
         case .copy: "It's on your clipboard."
         case .remember: "I'll remember that."
         case .forget: "Okay, I've forgotten that."
-        case .typeText, .pressKey, .paste, .plan, .confirm: ""
+        case .typeText, .pressKey, .paste, .plan, .confirm, .events, .reminders, .contact,
+             .addEvent, .addReminder, .draftMail, .shortcut, .addRoutine, .removeRoutine, .recall: ""
         }
     }
 

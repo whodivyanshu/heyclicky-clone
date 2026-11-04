@@ -19,15 +19,39 @@ public enum ActionKind: String, Equatable, Sendable, CaseIterable {
     case confirm = "CONFIRM"
     case remember = "REMEMBER"
     case forget = "FORGET"
+    /// Reads calendar events. The result goes back to the model, which then answers from it.
+    case events = "EVENTS"
+    /// Reads unfinished reminders, like `events`.
+    case reminders = "REMINDERS"
+    /// Looks up a person in Contacts, like `events`.
+    case contact = "CONTACT"
+    case addEvent = "ADD_EVENT"
+    case addReminder = "ADD_REMINDER"
+    /// Opens a new mail draft for them to check. It's never sent from here. Written as a block, like `copy`.
+    case draftMail = "DRAFT_MAIL"
+    case shortcut = "SHORTCUT"
+    case addRoutine = "ADD_ROUTINE"
+    case removeRoutine = "REMOVE_ROUTINE"
+    /// Searches what was on screen earlier, if they've turned on screen memory.
+    case recall = "RECALL"
 
     public var usesKeyboard: Bool { self == .typeText || self == .pressKey || self == .paste }
-    public var isBlock: Bool { self == .copy || self == .paste }
+    public var isBlock: Bool { self == .copy || self == .paste || self == .draftMail }
+    /// Fetches data for the model instead of changing anything.
+    public var isLookup: Bool { self == .events || self == .reminders || self == .contact || self == .recall }
+    /// Uses an app's data directly instead of the screen, so it needs no click and no screenshot.
+    public var isNative: Bool {
+        switch self {
+        case .events, .reminders, .contact, .addEvent, .addReminder, .draftMail, .shortcut, .recall: true
+        default: false
+        }
+    }
 
     /// Whether the screen may look different afterward, so Jarvis should look again before finishing.
     public var changesScreen: Bool {
         switch self {
-        case .openApp, .quitApp, .openURL, .findFile, .typeText, .pressKey, .paste: true
-        case .copy, .plan, .confirm, .remember, .forget: false
+        case .openApp, .quitApp, .openURL, .findFile, .typeText, .pressKey, .paste, .draftMail, .shortcut: true
+        case .copy, .plan, .confirm, .remember, .forget, .events, .reminders, .contact, .addEvent, .addReminder, .addRoutine, .removeRoutine, .recall: false
         }
     }
 
@@ -35,7 +59,7 @@ public enum ActionKind: String, Equatable, Sendable, CaseIterable {
     /// Clicks and keys depend on what's on screen, so those are worth checking afterward.
     public var canFinishRequest: Bool {
         switch self {
-        case .openApp, .quitApp, .openURL, .findFile: true
+        case .openApp, .quitApp, .openURL, .findFile, .draftMail, .shortcut: true
         default: false
         }
     }

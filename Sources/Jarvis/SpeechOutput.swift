@@ -193,6 +193,7 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
     private var isSpeaking = false
     private var inputComplete = false
     private var geminiFailedThisTurn = false
+    private var sentFirstSentence = false
     /// After a failed action the model's "Opening it now" would be wrong, so the rest of its reply is dropped.
     private var dropsFurtherSpeech = false
     /// Goes up on every stop, so audio that arrives late can't start playing.
@@ -207,6 +208,7 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
         stop()
         config = voiceConfig()
         geminiFailedThisTurn = false
+        sentFirstSentence = false
         dropsFurtherSpeech = false
     }
 
@@ -217,7 +219,11 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
                 if dropsFurtherSpeech { continue }
                 if case .gemini = config {
                     unsentText += unsentText.isEmpty ? text : " " + text
-                    if unsentText.count >= Self.maxMergedCharacters { flushUnsentText() }
+                    // The first sentence goes straight away, so the voice can start before the model has finished writing.
+                    if !sentFirstSentence || unsentText.count >= Self.maxMergedCharacters {
+                        sentFirstSentence = true
+                        flushUnsentText()
+                    }
                 } else {
                     queue.append(.say(text, voice: nil))
                 }
