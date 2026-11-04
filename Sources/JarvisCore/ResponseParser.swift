@@ -23,8 +23,12 @@ public enum Beat: Equatable, Sendable {
     case point(PointTag)
     /// A guided step: point here, then wait for the user to click it.
     case target(PointTag)
+    /// Point here, then click it on the user's behalf.
+    case click(PointTag)
     /// Something to do on the Mac, such as opening an app.
     case action(ActionTag)
+    /// The model isn't finished: look at a new screenshot and ask it for the next step.
+    case next
 }
 
 /// Turns streamed model text into speakable sentences and pointing tags.
@@ -34,8 +38,8 @@ public enum Beat: Equatable, Sendable {
 public struct ResponseParser {
     private var pending = ""
     private var sentence = ""
-    private static let tagStarts = ["[POINT:", "[TARGET:"] + ActionKind.allCases.map { "[\($0.rawValue):" }
-    private static let maxTagLength = 200
+    private static let tagStarts = ["[POINT:", "[TARGET:", "[CLICK:", "[NEXT]"] + ActionKind.allCases.map { "[\($0.rawValue):" }
+    private static let maxTagLength = 2000
 
     private static let tagPattern = try! NSRegularExpression(
         pattern: #"^\[POINT:\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)(?:\s*:\s*(?!screen\s*\d)([^\]:]*?))?(?:\s*:\s*screen\s*(\d+))?\s*\]$"#,
@@ -46,7 +50,7 @@ public struct ResponseParser {
         options: [.caseInsensitive]
     )
     private static let actionPattern = try! NSRegularExpression(
-        pattern: #"^\[(OPEN_APP|QUIT_APP|OPEN_URL|FIND_FILE):\s*([^\]\n]+?)\s*\]$"#,
+        pattern: #"^\[(OPEN_APP|QUIT_APP|OPEN_URL|FIND_FILE|TYPE|KEY):\s*([^\]\n]+?)\s*\]$"#,
         options: [.caseInsensitive]
     )
     private static let nonePattern = try! NSRegularExpression(
@@ -73,9 +77,15 @@ public struct ResponseParser {
                 } else if let tag = Self.parseTarget(candidate) {
                     beats += flushSentence()
                     beats.append(.target(tag))
+                } else if let tag = Self.parseClick(candidate) {
+                    beats += flushSentence()
+                    beats.append(.click(tag))
                 } else if let tag = Self.parseAction(candidate) {
                     beats += flushSentence()
                     beats.append(.action(tag))
+                } else if candidate.uppercased() == "[NEXT]" {
+                    beats += flushSentence()
+                    beats.append(.next)
                 } else if !Self.matches(Self.nonePattern, candidate) {
                     sentence += candidate
                 }
@@ -131,6 +141,13 @@ public struct ResponseParser {
             label: (label?.isEmpty ?? true) ? nil : label,
             screen: group(4).flatMap(Int.init)
         )
+    }
+
+    /// A click is written exactly like a point, apart from its name.
+    static func parseClick(_ text: String) -> PointTag? {
+        let start = "[CLICK:"
+        guard text.uppercased().hasPrefix(start) else { return nil }
+        return parseTag("[POINT:" + text.dropFirst(start.count))
     }
 
     static func parseAction(_ text: String) -> ActionTag? {

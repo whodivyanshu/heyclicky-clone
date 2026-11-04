@@ -62,8 +62,11 @@ final class OverlayController {
     }
 
     /// A `ringRadius` marks the spot as a click target for a guided step.
-    func fly(to target: CGPoint, label: String?, ringRadius: CGFloat? = nil) {
+    /// Returns how long the flight takes, in seconds.
+    @discardableResult
+    func fly(to target: CGPoint, label: String?, ringRadius: CGFloat? = nil) -> Double {
         let distance = hypot(target.x - position.x, target.y - position.y)
+        let duration = min(max(Double(distance) / 1300, 0.4), 1.0)
         velocity = .zero
         targetRing = nil
         setCaption(nil)
@@ -71,10 +74,11 @@ final class OverlayController {
             from: position,
             to: target,
             start: CACurrentMediaTime(),
-            duration: min(max(Double(distance) / 1300, 0.4), 1.0),
+            duration: duration,
             label: label,
             ringRadius: ringRadius
         )
+        return duration
     }
 
     func returnToCursor() {

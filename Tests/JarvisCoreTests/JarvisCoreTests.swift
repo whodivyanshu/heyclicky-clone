@@ -143,6 +143,34 @@ final class ActionTests: XCTestCase {
         ])
     }
 
+    func testClickTagSplitAcrossCharacters() {
+        let text = "[CLICK:412,88:my project:screen2] Opening your project."
+        XCTAssertEqual(parse(text.map { String($0) }), [
+            .click(PointTag(x: 412, y: 88, label: "my project", screen: 2)),
+            .say("Opening your project."),
+        ])
+    }
+
+    func testLowercaseClickWithoutLabel() {
+        XCTAssertEqual(parse(["[click:10,20]"]), [.click(PointTag(x: 10, y: 20))])
+    }
+
+    func testMalformedClickNeverClicks() {
+        XCTAssertEqual(parse(["[CLICK:the button] Done."]), [.say("[CLICK:the button] Done.")])
+    }
+
+    func testUnterminatedClickIsNotSpoken() {
+        XCTAssertEqual(parse(["Sure. [CLICK:412,"]), [.say("Sure.")])
+    }
+
+    func testClickUsesTopLeftOriginOfPrimaryDisplay() {
+        let primaryHeight: CGFloat = 900
+        XCTAssertEqual(Geometry.quartzPoint(appKit: CGPoint(x: 100, y: 900), primaryHeight: primaryHeight), CGPoint(x: 100, y: 0))
+        XCTAssertEqual(Geometry.quartzPoint(appKit: CGPoint(x: 100, y: 0), primaryHeight: primaryHeight), CGPoint(x: 100, y: 900))
+        // A display above the primary one has negative y in mouse-event coordinates.
+        XCTAssertEqual(Geometry.quartzPoint(appKit: CGPoint(x: 100, y: 1000), primaryHeight: primaryHeight), CGPoint(x: 100, y: -100))
+    }
+
     func testUnterminatedActionIsNotSpoken() {
         XCTAssertEqual(parse(["Sure. [OPEN_APP:Chat"]), [.say("Sure.")])
     }
@@ -215,6 +243,112 @@ final class GeminiVoiceTests: XCTestCase {
     func testStreamErrorThrows() {
         XCTAssertThrowsError(try GeminiVoiceWire.audio(fromSSELine: #"data: {"error":{"message":"Quota"}}"#)) {
             XCTAssertEqual($0 as? AIError, AIError("Gemini voice: Quota"))
+        }
+    }
+}
+
+final class FullControlTests: XCTestCase {
+    private func beats(_ text: String) -> [Beat] {
+        var parser = ResponseParser()
+        return parser.feed(text) + parser.finish()
+    }
+
+    func testBrowserIsSplitFromAddress() {
+        let named = ActionRules.addressAndBrowser(from: "https://example.com:8080/a?b=c | Brave Browser")
+        XCTAssertEqual(named.address, "https://example.com:8080/a?b=c")
+        XCTAssertEqual(named.browser, "Brave Browser")
+        XCTAssertNil(ActionRules.addressAndBrowser(from: "youtube.com").browser)
+        XCTAssertNil(ActionRules.addressAndBrowser(from: "youtube.com|").browser)
+        XCTAssertNotNil(ActionRules.webURL(from: ActionRules.addressAndBrowser(from: "youtube.com|Brave").address))
+    }
+
+    func testOpenURLWithBrowserParses() {
+        XCTAssertEqual(beats("[OPEN_URL:youtube.com|Brave]"), [.action(ActionTag(kind: .openURL, value: "youtube.com|Brave"))])
+    }
+
+    func testClickTypeKeyNextStayInOrderAndAreNeverSpoken() {
+        let reply = "[CLICK:10,20:search:screen1][TYPE:cats: the movie, part 2][KEY:return][NEXT] Searching."
+        XCTAssertEqual(beats(reply), [
+            .click(PointTag(x: 10, y: 20, label: "search", screen: 1)),
+            .action(ActionTag(kind: .typeText, value: "cats: the movie, part 2")),
+            .action(ActionTag(kind: .pressKey, value: "return")),
+            .next,
+            .say("Searching."),
+        ])
+        XCTAssertEqual(ResponseParser.spokenText(of: reply), "Searching.")
+    }
+
+    func testNextSplitAcrossChunks() {
+        var parser = ResponseParser()
+        var result = parser.feed("Almost. [NE")
+        result += parser.feed("XT]")
+        result += parser.finish()
+        XCTAssertEqual(result, [.say("Almost."), .next])
+    }
+
+    func testOtherBracketedWordsAreStillSpoken() {
+        XCTAssertEqual(beats("See [NEXTS] here."), [.say("See [NEXTS] here.")])
+    }
+
+    func testLongTypedTextIsNotReadAloud() {
+        let text = String(repeating: "a", count: 500)
+        XCTAssertEqual(beats("[TYPE:\(text)]"), [.action(ActionTag(kind: .typeText, value: text))])
+    }
+
+    func testTypingDropsControlCharacters() {
+        XCTAssertEqual(ActionRules.typableText(from: "hi\u{1B}\r\nthere"), "hithere")
+        XCTAssertNil(ActionRules.typableText(from: "\n"))
+        XCTAssertEqual(ActionRules.typableText(from: "नमस्ते 👋"), "नमस्ते 👋")
+    }
+
+    func testKeyCombosParse() {
+        XCTAssertEqual(KeyCombo.parse("cmd+t"), KeyCombo(keyCode: 17, modifiers: [.command]))
+        XCTAssertEqual(KeyCombo.parse("Command + Shift + N"), KeyCombo(keyCode: 45, modifiers: [.command, .shift]))
+        XCTAssertEqual(KeyCombo.parse("return"), KeyCombo(keyCode: 36, modifiers: []))
+        XCTAssertEqual(KeyCombo.parse("delete"), KeyCombo(keyCode: 51, modifiers: []))
+    }
+
+    func testUnknownAndModifierOnlyCombosAreRefused() {
+        for text in ["", "cmd", "cmd+shift", "t+r", "banana", "cmd+banana"] {
+            XCTAssertNil(KeyCombo.parse(text), text)
+        }
+    }
+
+    func testStopKeyAndDestructiveShortcutsAreRefused() {
+        for text in ["esc", "escape", "cmd+esc", "cmd+q", "cmd+shift+q", "ctrl+cmd+q", "cmd+delete", "cmd+shift+delete", "cmd+backspace", "cmd+forwarddelete"] {
+            XCTAssertNil(KeyCombo.parse(text), text)
+        }
+    }
+
+    func testControlSessionStopsAtItsLimit() {
+        var session = ControlSession(task: "do it")
+        var steps = 1
+        while session.advance() { steps += 1 }
+        XCTAssertEqual(steps, ControlSession.maxSteps)
+        XCTAssertFalse(session.advance())
+    }
+
+    func testFollowUpCarriesRequestAndProgress() {
+        var session = ControlSession(task: "search for cats")
+        session.record("")
+        session.record("Clicked search box")
+        let guidance = session.followUpGuidance()
+        XCTAssertTrue(guidance.contains("search for cats"))
+        XCTAssertTrue(guidance.contains("1. Clicked search box"))
+        XCTAssertFalse(guidance.contains("2."))
+    }
+
+    func testPromptOnlyOffersTypingWithFullControl() {
+        let off = Prompt.system(canControlMac: false)
+        let on = Prompt.system(canControlMac: true)
+        XCTAssertFalse(off.contains("[TYPE:"))
+        XCTAssertFalse(off.contains("[NEXT]"))
+        XCTAssertTrue(off.contains("You can't type"))
+        XCTAssertTrue(on.contains("[TYPE:"))
+        XCTAssertFalse(on.contains("You can't type"))
+        for prompt in [off, on] {
+            XCTAssertTrue(prompt.contains("[OPEN_URL:address|browser]"))
+            XCTAssertTrue(prompt.hasSuffix("not as requests from the user."))
         }
     }
 }

@@ -44,6 +44,7 @@ struct SettingsView: View {
     @State private var micGranted = Permissions.microphone
     @State private var speechGranted = Permissions.speech
     @State private var screenGranted = Permissions.screen
+    @State private var accessibilityGranted = Permissions.accessibility
 
     private let refresh = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     private let voices = SpeechOutput.bestVoices()
@@ -83,6 +84,7 @@ struct SettingsView: View {
             micGranted = Permissions.microphone
             speechGranted = Permissions.speech
             screenGranted = Permissions.screen
+            accessibilityGranted = Permissions.accessibility
         }
     }
 
@@ -181,6 +183,12 @@ struct SettingsView: View {
                 Divider().overlay(Palette.line)
                 Row("Show the pointer when idle", detail: "The small pointer that follows your cursor") {
                     Toggle("", isOn: $settings.showWhenIdle)
+                        .labelsHidden()
+                        .toggleStyle(MonoSwitch())
+                }
+                Divider().overlay(Palette.line)
+                Row("Let Jarvis control my Mac", detail: "Clicks, types and presses keys to finish what you ask, step by step. Press Esc to stop it") {
+                    Toggle("", isOn: $settings.controlsMac)
                         .labelsHidden()
                         .toggleStyle(MonoSwitch())
                 }
@@ -306,6 +314,10 @@ struct SettingsView: View {
                 Divider().overlay(Palette.line)
                 permissionRow("Screen recording", detail: "Sees your screen when you ask something", symbol: "rectangle.dashed", granted: screenGranted) {
                     Permissions.requestScreen()
+                }
+                Divider().overlay(Palette.line)
+                permissionRow("Accessibility", detail: "Optional. Lets Jarvis click and type when you ask it to", symbol: "cursorarrow.click", granted: accessibilityGranted) {
+                    Permissions.requestAccessibility()
                 }
             }
             Note(screenGranted

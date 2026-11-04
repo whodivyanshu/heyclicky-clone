@@ -23,9 +23,17 @@ final class Coordinator {
     private var didPoint = false
     private var allowsActions = false
     private var sawAction = false
+    /// Once something has run this turn the screenshot may be out of date, so a click could land on the wrong thing.
+    private var didRunAction = false
     private var actionFailure: String?
     private var isTurnRecorded = false
     private var returnTask: Task<Void, Never>?
+
+    /// Set while a request is running with full control turned on.
+    private var control: ControlSession?
+    private var wantsNextStep = false
+    /// An app or page that was just opened may not be ready, so keys sent now could land in the wrong window.
+    private var didOpenSomething = false
 
     private var guide: GuideSession?
     private var clickMonitor: Any?
@@ -67,6 +75,7 @@ final class Coordinator {
         speechOut.onPoint = { [weak self] in self?.point(at: $0) }
         speechOut.onTarget = { [weak self] in self?.target($0) }
         speechOut.onAction = { [weak self] in await self?.act($0) }
+        speechOut.onClick = { [weak self] in await self?.click($0) }
         speechOut.onDrained = { [weak self] in self?.speechFinished() }
         speechOut.onVoiceError = { [weak self] in self?.island.notice = $0 }
 
@@ -161,7 +170,7 @@ final class Coordinator {
         interrupt()
         island.isOpen = false
         island.rest()
-        guide = GuideSession(task: text)
+        startRequest(text)
         turn = Task { await perform(transcript: text) }
     }
 
@@ -185,6 +194,13 @@ final class Coordinator {
         speechOut.stop()
         overlay.returnToCursor()
         didPoint = false
+        control = nil
+        wantsNextStep = false
+    }
+
+    private func startRequest(_ text: String) {
+        guide = GuideSession(task: text)
+        control = settings.controlsMac ? ControlSession(task: text) : nil
     }
 
     private func ensureVoicePermissions() async -> Bool {
@@ -212,7 +228,7 @@ final class Coordinator {
                 setMode(.idle)
                 return
             }
-            guide = GuideSession(task: transcript)
+            startRequest(transcript)
             await perform(transcript: transcript)
         } catch is CancellationError {
             // Interrupted: whatever interrupted the turn has already reset the state.
@@ -232,15 +248,20 @@ final class Coordinator {
     }
 
     /// One round with the AI: takes fresh screenshots, streams the reply, and hands it to speech.
-    private func exchange(transcript: String, guidance: String?, historyEntry: String) async throws {
+    /// `continuesRequest` marks a later step of a request Jarvis is carrying out by itself.
+    private func exchange(transcript: String, guidance: String?, historyEntry: String, continuesRequest: Bool = false) async throws {
         setMode(.thinking)
         island.reply = ""
         island.notice = ""
         island.activity = ""
         island.show(.thinking)
-        // Walkthrough follow-ups have no new words from the user, so only a direct request can act.
-        allowsActions = guidance == nil
+        // Walkthrough follow-ups have no new words from the user, so only a direct request can act,
+        // along with the later steps of a request they gave Jarvis to carry out.
+        allowsActions = guidance == nil || continuesRequest
         sawAction = false
+        didRunAction = false
+        didOpenSomething = false
+        wantsNextStep = false
         actionFailure = nil
         isTurnRecorded = false
 
@@ -250,7 +271,7 @@ final class Coordinator {
         screens = captured.map(\.map)
 
         let request = AIRequest(
-            system: Prompt.system,
+            system: Prompt.system(canControlMac: control != nil),
             history: history,
             userText: userMessage(transcript: transcript, guidance: guidance, captured: captured),
             jpegImages: captured.map(\.jpeg)
@@ -271,7 +292,13 @@ final class Coordinator {
         if spoken.isEmpty, !didPoint, !sawAction {
             throw JarvisMessage("The model sent back an empty reply.")
         }
-        history.append(ChatTurn(user: historyEntry, assistant: actionFailure ?? spoken))
+        let said = actionFailure ?? spoken
+        if continuesRequest, let last = history.last {
+            // One request stays one turn, however many steps it took, so it doesn't push out the conversation.
+            history[history.count - 1] = ChatTurn(user: last.user, assistant: [last.assistant, said].filter { !$0.isEmpty }.joined(separator: " "))
+        } else {
+            history.append(ChatTurn(user: historyEntry, assistant: said))
+        }
         history = Array(history.suffix(Self.historyLimit))
         island.conversation = history
         isTurnRecorded = true
@@ -311,8 +338,11 @@ final class Coordinator {
             case .say(let text):
                 guard actionFailure == nil else { continue }
                 island.reply += island.reply.isEmpty ? text : " " + text
-            case .action:
+            case .action, .click:
                 sawAction = true
+            case .next:
+                sawAction = true
+                wantsNextStep = allowsActions && control != nil
             case .point, .target:
                 break
             }
@@ -323,12 +353,57 @@ final class Coordinator {
 
     /// Returns what to say instead of the model's reply if the action failed.
     private func act(_ tag: ActionTag) async -> String? {
-        guard allowsActions else { return nil }
+        // After a failure the rest of the reply was planned for a screen that isn't there.
+        guard allowsActions, actionFailure == nil else { return nil }
+        if tag.kind.usesKeyboard {
+            guard control != nil else {
+                return report(ActionResult(summary: "Didn't type", failure: "I can't use your keyboard unless you turn on full control in Settings."))
+            }
+            guard !didOpenSomething else {
+                return report(ActionResult(summary: "Didn't type", failure: "The new window may not have been ready, so I stopped before typing. Ask me again and I'll take a fresh look."))
+            }
+        } else {
+            didOpenSomething = true
+        }
+        didRunAction = true
         island.activity = ActionRunner.progress(for: tag)
-        let result = await ActionRunner.run(tag)
+        return report(await ActionRunner.run(tag))
+    }
+
+    /// Flies the pointer to the target so they can see what's about to happen, then clicks it.
+    private func click(_ tag: PointTag) async -> String? {
+        // Walkthrough follow-ups have no new words from the user, so show the target and leave the click to them.
+        guard allowsActions else {
+            point(at: tag)
+            return nil
+        }
+        guard actionFailure == nil else { return nil }
+        guard !didRunAction, let screen = screen(for: tag) else {
+            return report(ActionResult(
+                summary: "Didn't click \(tag.label ?? "that")",
+                failure: "The screen may have changed, so I didn't click. Ask me again and I'll take a fresh look."
+            ))
+        }
+        didRunAction = true
+        didPoint = true
+        island.activity = "Clicking \(tag.label ?? "that")…"
+        let location = screen.globalPoint(imageX: tag.x, imageY: tag.y)
+        let flight = overlay.fly(to: location, label: tag.label)
+        try? await Task.sleep(nanoseconds: UInt64(flight * 1_000_000_000))
+        // Esc or the shortcut during the flight has to stop the click.
+        guard !Task.isCancelled else { return nil }
+        let result = await ActionRunner.click(at: location, label: tag.label)
+        guard !Task.isCancelled else { return nil }
+        return report(result)
+    }
+
+    private func report(_ result: ActionResult) -> String? {
         // A failure is explained in the reply itself, so only success gets the checkmark line.
         island.activity = result.failure == nil ? result.summary : ""
-        guard let failure = result.failure else { return nil }
+        guard let failure = result.failure else {
+            control?.record(result.summary)
+            return nil
+        }
         actionFailure = failure
         island.reply = failure
         // The reply may already be in the history, and it shouldn't claim something happened that didn't.
@@ -353,6 +428,7 @@ final class Coordinator {
     private func speechFinished() {
         setMode(.idle)
         if guide?.current != nil { return }
+        if continueRequest() { return }
         guide = nil
         island.rest(after: Self.replyLinger)
         guard didPoint else { return }
@@ -363,6 +439,40 @@ final class Coordinator {
             guard !Task.isCancelled else { return }
             overlay.returnToCursor()
         }
+    }
+
+    // MARK: - Full control
+
+    /// Starts the next step if the model asked for one. A failed action ends the request.
+    private func continueRequest() -> Bool {
+        guard wantsNextStep, actionFailure == nil, var session = control else { return false }
+        wantsNextStep = false
+        didPoint = false
+        overlay.returnToCursor()
+
+        guard session.advance() else {
+            control = nil
+            speechOut.begin()
+            deliver([.say("I've stopped after \(ControlSession.maxSteps) steps. Ask me again if there's more to do.")])
+            speechOut.finishInput()
+            return true
+        }
+        control = session
+        let task = session.task
+        let guidance = session.followUpGuidance()
+        setMode(.thinking)
+        island.show(.thinking)
+        turn = Task {
+            do {
+                try await Task.sleep(nanoseconds: Self.settleAfterClick)
+                try await exchange(transcript: task, guidance: guidance, historyEntry: task, continuesRequest: true)
+            } catch is CancellationError {
+                // Interrupted: whatever interrupted the turn has already reset the state.
+            } catch {
+                if !Task.isCancelled { show(error) }
+            }
+        }
+        return true
     }
 
     // MARK: - Guided walkthrough

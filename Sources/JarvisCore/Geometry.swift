@@ -30,6 +30,11 @@ public struct ScreenMap: Equatable, Sendable {
 }
 
 public enum Geometry {
+    /// Converts AppKit global coordinates to the ones mouse events use: origin at the top-left of the primary display, y down.
+    public static func quartzPoint(appKit point: CGPoint, primaryHeight: CGFloat) -> CGPoint {
+        CGPoint(x: point.x, y: primaryHeight - point.y)
+    }
+
     /// Scales a size down so its long edge is at most `maxLongEdge`, keeping aspect ratio.
     public static func fitted(width: Int, height: Int, maxLongEdge: Int) -> (width: Int, height: Int) {
         let longEdge = max(width, height)

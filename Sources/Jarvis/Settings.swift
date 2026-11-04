@@ -61,6 +61,8 @@ final class AppSettings: ObservableObject {
     @Published var voiceIdentifier: String { didSet { save(voiceIdentifier, "voice") } }
     @Published var showWhenIdle: Bool { didSet { UserDefaults.standard.set(showWhenIdle, forKey: "showWhenIdle") } }
     @Published var showIslandWhenIdle: Bool { didSet { UserDefaults.standard.set(showIslandWhenIdle, forKey: "showIslandWhenIdle") } }
+    /// Lets Jarvis use the keyboard and work through several steps by itself. Off until the user chooses it.
+    @Published var controlsMac: Bool { didSet { UserDefaults.standard.set(controlsMac, forKey: "controlsMac") } }
     @Published var voiceEngine: VoiceEngine { didSet { save(voiceEngine.rawValue, "voiceEngine") } }
     @Published var geminiVoice: String { didSet { save(geminiVoice, "geminiVoice") } }
     @Published var geminiVoiceModel: String { didSet { save(geminiVoiceModel, "geminiVoiceModel") } }
@@ -74,6 +76,7 @@ final class AppSettings: ObservableObject {
         voiceIdentifier = defaults.string(forKey: "voice") ?? ""
         showWhenIdle = defaults.object(forKey: "showWhenIdle") as? Bool ?? true
         showIslandWhenIdle = defaults.object(forKey: "showIslandWhenIdle") as? Bool ?? true
+        controlsMac = defaults.bool(forKey: "controlsMac")
         voiceEngine = defaults.string(forKey: "voiceEngine").flatMap(VoiceEngine.init) ?? (Keychain.geminiKey != nil ? .gemini : .system)
         geminiVoice = defaults.string(forKey: "geminiVoice") ?? GeminiVoiceWire.defaultVoice
         geminiVoiceModel = defaults.string(forKey: "geminiVoiceModel") ?? GeminiVoiceWire.defaultModel
@@ -141,6 +144,7 @@ enum Permissions {
     static var microphone: Bool { AVCaptureDevice.authorizationStatus(for: .audio) == .authorized }
     static var speech: Bool { SFSpeechRecognizer.authorizationStatus() == .authorized }
     static var screen: Bool { CGPreflightScreenCaptureAccess() }
+    static var accessibility: Bool { AXIsProcessTrusted() }
 
     static func requestMicrophone() async -> Bool {
         await AVCaptureDevice.requestAccess(for: .audio)
@@ -162,6 +166,11 @@ enum Permissions {
            let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// Shows the system prompt, which adds Jarvis to the Accessibility list and links to the toggle.
+    static func requestAccessibility() {
+        _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
     }
 
     static func openSettings(for pane: String) {

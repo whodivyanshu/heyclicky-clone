@@ -1,7 +1,7 @@
 import Foundation
 import JarvisCore
 
-/// `Jarvis --ask "question" [--image file.jpg] [--provider claude|gemini] [--model name]`
+/// `Jarvis --ask "question" [--image file.jpg] [--provider claude|gemini] [--model name] [--full-control]`
 /// Sends one request through the real provider and parser, then prints the resulting beats.
 enum SmokeTest {
     private static func value(_ flag: String) -> String? {
@@ -95,7 +95,7 @@ enum SmokeTest {
         }
 
         let images = value("--image").flatMap { FileManager.default.contents(atPath: $0) }.map { [$0] } ?? []
-        let request = AIRequest(system: Prompt.system, userText: value("--ask") ?? "Say hello.", jpegImages: images)
+        let request = AIRequest(system: Prompt.system(canControlMac: CommandLine.arguments.contains("--full-control")), userText: value("--ask") ?? "Say hello.", jpegImages: images)
 
         Task {
             let start = Date()

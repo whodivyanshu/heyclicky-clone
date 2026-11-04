@@ -133,6 +133,8 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
     var onTarget: (PointTag) -> Void = { _ in }
     /// Runs an action and returns what to say instead of the model's reply if it failed.
     var onAction: (ActionTag) async -> String? = { _ in nil }
+    /// Same as `onAction`, for a click. It watches for task cancellation, because stopping must also stop a pending click.
+    var onClick: (PointTag) async -> String? = { _ in nil }
     var onDrained: () -> Void = {}
     var onVoiceError: (String) -> Void = { _ in }
     var voiceConfig: () -> VoiceConfig = { .system(identifier: "") }
@@ -140,6 +142,7 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
     private enum Item {
         case point(PointTag)
         case target(PointTag)
+        case click(PointTag)
         case action(ActionTag)
         case say(String, voice: GeminiVoiceStream?)
     }
@@ -150,6 +153,7 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
     private let synthesizer = AVSpeechSynthesizer()
     private var player: PCMStreamPlayer?
     private var currentVoice: GeminiVoiceStream?
+    private var runningAction: Task<Void, Never>?
     private var config = VoiceConfig.system(identifier: "")
     private var queue: [Item] = []
     private var unsentText = ""
@@ -190,9 +194,15 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
             case .target(let tag):
                 flushUnsentText()
                 queue.append(.target(tag))
+            case .click(let tag):
+                flushUnsentText()
+                queue.append(.click(tag))
             case .action(let tag):
                 flushUnsentText()
                 queue.append(.action(tag))
+            case .next:
+                // The coordinator acts on this once everything in the queue has finished.
+                break
             }
         }
         advance()
@@ -206,6 +216,8 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
 
     func stop() {
         generation += 1
+        runningAction?.cancel()
+        runningAction = nil
         for item in queue {
             if case .say(_, let voice) = item { voice?.cancel() }
         }
@@ -238,9 +250,12 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
                 onPoint(tag)
             case .target(let tag):
                 onTarget(tag)
+            case .click(let tag):
+                isSpeaking = true
+                perform { [onClick] in await onClick(tag) }
             case .action(let tag):
                 isSpeaking = true
-                perform(tag)
+                perform { [onAction] in await onAction(tag) }
             case .say(let text, let voice):
                 isSpeaking = true
                 if let voice {
@@ -257,10 +272,10 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     /// Holds the queue until the action finishes, so speech never gets ahead of what really happened.
-    private func perform(_ tag: ActionTag) {
+    private func perform(_ work: @escaping () async -> String?) {
         let started = generation
-        Task {
-            let failure = await onAction(tag)
+        runningAction = Task {
+            let failure = await work()
             guard started == generation else { return }
             if let failure { replaceRemainingSpeech(with: failure) }
             isSpeaking = false
