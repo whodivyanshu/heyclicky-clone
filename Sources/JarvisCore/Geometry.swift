@@ -1,6 +1,23 @@
 import CoreGraphics
 import Foundation
 
+public enum ScreenRules {
+    /// A pixel has to move this far to count, which ignores compression noise and soft fades.
+    private static let pixelTolerance = 8
+    /// A blinking text cursor or a clock changes a few pixels, and shouldn't count as the screen still changing.
+    private static let allowedChangedShare = 0.005
+
+    /// Compares two thumbnails of the same size.
+    public static func looksSame(_ a: [UInt8], _ b: [UInt8]) -> Bool {
+        guard a.count == b.count else { return false }
+        var changed = 0
+        for index in a.indices where abs(Int(a[index]) - Int(b[index])) > pixelTolerance {
+            changed += 1
+        }
+        return Double(changed) <= Double(a.count) * allowedChangedShare
+    }
+}
+
 /// Relates one captured screenshot to the display it came from.
 /// `frame` is in AppKit global coordinates (origin bottom-left, y up, in points);
 /// screenshot coordinates have their origin top-left, y down, in image pixels.

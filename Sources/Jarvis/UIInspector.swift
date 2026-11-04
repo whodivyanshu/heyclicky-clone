@@ -135,16 +135,26 @@ enum UIInspector {
         return ContextRules.limited(string(focused, kAXSelectedTextAttribute))
     }
 
-    /// The labeled controls in the front window, converted to screenshot pixels. Runs off the main thread,
-    /// because a large window takes a moment to walk.
-    static func controls(on screens: [ScreenMap], primaryHeight: CGFloat) async -> [ScreenControl] {
-        guard AXIsProcessTrusted(), let pid = frontApp()?.processIdentifier else { return [] }
-        return await Task.detached(priority: .userInitiated) {
-            walk(pid: pid, screens: screens, primaryHeight: primaryHeight)
-        }.value
+    /// A control as the app reports it, before the screenshot it will be matched to exists.
+    struct FoundControl: Sendable {
+        let role: String
+        let label: String
+        let box: CGRect
     }
 
-    private static func walk(pid: pid_t, screens: [ScreenMap], primaryHeight: CGFloat) -> [ScreenControl] {
+    /// Starts reading the labeled controls in the front window. Runs off the main thread, because a large
+    /// window takes a moment to walk, so it can happen while the screenshot is being taken.
+    static func startFindingControls() -> Task<[FoundControl], Never> {
+        guard AXIsProcessTrusted(), let pid = frontApp()?.processIdentifier else { return Task { [] } }
+        return Task.detached(priority: .userInitiated) { walk(pid: pid) }
+    }
+
+    /// Converts found controls to screenshot pixels, leaving out any that aren't on a captured screen.
+    static func controls(_ found: [FoundControl], on screens: [ScreenMap], primaryHeight: CGFloat) -> [ScreenControl] {
+        found.compactMap { control(role: $0.role, label: $0.label, box: $0.box, screens: screens, primaryHeight: primaryHeight) }
+    }
+
+    private static func walk(pid: pid_t) -> [FoundControl] {
         let root = appElement(pid: pid)
         // Electron apps such as VS Code and WhatsApp's desktop app only build their tree when asked.
         AXUIElementSetAttributeValue(root, "AXManualAccessibility" as CFString, kCFBooleanTrue)
@@ -155,7 +165,7 @@ enum UIInspector {
         let deadline = Date().addingTimeInterval(walkBudget)
         var stack = [window]
         var visited = 0
-        var found: [ScreenControl] = []
+        var found: [FoundControl] = []
         while let current = stack.popLast(), visited < maxVisited, found.count < maxControls, Date() < deadline {
             visited += 1
             let box = frame(current)
@@ -163,9 +173,8 @@ enum UIInspector {
             if let box, !box.isEmpty, !box.intersects(windowFrame) { continue }
 
             if let role = string(current, kAXRoleAttribute), let name = controlRoles[role], let box, !box.isEmpty,
-               let label = ownLabels(current).first ?? string(current, kAXPlaceholderValueAttribute) ?? innerText(current),
-               let control = control(role: name, label: label, box: box, screens: screens, primaryHeight: primaryHeight) {
-                found.append(control)
+               let label = ownLabels(current).first ?? string(current, kAXPlaceholderValueAttribute) ?? innerText(current) {
+                found.append(FoundControl(role: name, label: label, box: box))
                 // A labeled row's insides would only repeat it.
                 if role == "AXRow" || role == "AXCell" || role == "AXButton" || role == "AXLink" { continue }
             }

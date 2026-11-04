@@ -28,6 +28,8 @@ Hover over it to open your conversation and a box where you can type a question 
 
 Ask Jarvis to open or quit any installed app, whether or not it's in the Dock, open a website in your default browser or one you name ("open YouTube in Brave"), or find a file in your home folder and show it in Finder. It acts right away, and the island shows what it did. If something can't be done, it says so.
 
+Simple English commands, such as "open Chrome", "quit Slack" or "go to github.com", run immediately without a screenshot or the AI. This only happens when the whole sentence is one command and it names an app or website Jarvis recognizes, and everything else goes to the AI as usual.
+
 Actions only come from what you ask directly. Text on your screen can't trigger them, web actions only open `http` and `https` addresses, and found files are shown in Finder, not opened.
 
 Jarvis can also click something you can see when you ask, such as a project in VS Code's recent list. The pointer flies to it first, and Esc stops it. This needs the Accessibility permission, which macOS asks for the first time Jarvis clicks. It makes one click per reply, and it won't click in System Settings or security dialogs. Without full control it can't type, and anything longer than one step ends with it telling you to turn full control on.
@@ -62,7 +64,7 @@ Say "remember that my main project is Jarvis" and it's still known after you qui
 
 ## Guided walkthroughs
 
-Ask "how do I..." or "walk me through..." and Jarvis circles one control and tells you to click it. When you click inside the circle, it takes a new screenshot and moves to the next step, for up to 8 steps. You do all the clicking in a walkthrough. Clicking elsewhere, pressing Esc, holding the shortcut again, or waiting 2 minutes ends the walkthrough.
+Say "teach me...", "show me how..." or "walk me through..." and Jarvis circles one control and tells you to click it. When you click inside the circle, it takes a new screenshot and moves to the next step, for up to 8 steps. You do all the clicking in a walkthrough. Clicking elsewhere, pressing Esc, holding the shortcut again, or waiting 2 minutes ends the walkthrough.
 
 ## Voices
 
@@ -115,6 +117,8 @@ dist/Jarvis.app/Contents/MacOS/Jarvis --find-app "chat GPT"
 dist/Jarvis.app/Contents/MacOS/Jarvis --save-gemini-key
 # Play through every island state and the pointer's flight:
 open -n dist/Jarvis.app --args --demo
+# Watch how long each stage of a request takes (stage names and times only):
+log stream --predicate 'subsystem == "local.jarvis.companion" AND category == "timing"'
 ```
 
 The build script signs with your Apple Development identity if you have one, so macOS keeps Jarvis's permissions across rebuilds. With ad-hoc signing you'd have to grant them again after each build.

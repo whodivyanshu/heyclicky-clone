@@ -105,7 +105,6 @@ struct ClaudeCodeProvider: AIProvider {
         }
 
         var sawText = false
-        var failure: String?
         for try await line in stdout.fileHandleForReading.bytes.lines {
             switch ClaudeCodeWire.event(fromLine: line) {
             case .text(let text):
@@ -113,10 +112,11 @@ struct ClaudeCodeProvider: AIProvider {
                 continuation.yield(text)
             case .result(let text, let isError):
                 if isError {
-                    failure = text
-                } else if !sawText, !text.isEmpty {
-                    continuation.yield(text)
+                    throw AIError("Claude Code: \(text.isEmpty ? "the request failed." : text)")
                 }
+                if !sawText, !text.isEmpty { continuation.yield(text) }
+                // The reply is complete. The CLI takes about 0.8s more to exit, and ending the stream stops it.
+                return
             case nil:
                 break
             }
@@ -126,9 +126,6 @@ struct ClaudeCodeProvider: AIProvider {
         let stderrText = await errorOutput.value
 
         if Task.isCancelled { return }
-        if let failure {
-            throw AIError("Claude Code: \(failure.isEmpty ? "the request failed." : failure)")
-        }
         if process.terminationStatus != 0 {
             let detail = stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
             throw AIError("Claude Code: \(detail.isEmpty ? "exited with code \(process.terminationStatus)." : String(detail.prefix(300)))")

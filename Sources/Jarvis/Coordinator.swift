@@ -39,6 +39,14 @@ final class Coordinator {
     private var sawDone = false
     private var sawTarget = false
     private var ranScreenAction = false
+    private var ranClickOrKeys = false
+    private var sawPoint = false
+    private var madePlan = false
+    /// How the screen looked before opening something, to tell when the new window has appeared.
+    private var beforeOpening: [UInt8]?
+    /// A screenshot started when the shortcut was released, so it's ready by the time the transcript is.
+    private var pendingLook: Task<Look, Error>?
+    private var clock = TurnClock()
     /// While a job runs, words wait for the end of the reply, and are only spoken if the job is finished.
     private var heldBeats: [Beat] = []
     /// What Jarvis itself typed for this request. Shown when it asks, since this is what would actually be sent.
@@ -66,10 +74,11 @@ final class Coordinator {
     private static let pointHoldAfterSpeech: UInt64 = 2_500_000_000
     /// How long a finished reply stays readable on the island.
     private static let replyLinger: Double = 5
-    /// Gives the app time to react to a click before the next screenshot.
-    private static let settleAfterClick: UInt64 = 700_000_000
+    /// Gives the app time to react to a click before the next screenshot, or less once the screen has stopped changing.
+    /// The minimum leaves time for a list to filter or a menu to appear, since a stale screen could mean a wrong click.
+    private static let settleAfterClick = (minimum: 0.35, limit: 0.7)
     /// Apps and pages take longer to be ready than a click takes to register.
-    private static let settleAfterOpening: UInt64 = 1_500_000_000
+    private static let settleAfterOpening = (minimum: 0.3, limit: 1.5)
     private static let guideWait: UInt64 = 120_000_000_000
     private static let confirmationWait: UInt64 = 60_000_000_000
 
@@ -201,6 +210,11 @@ final class Coordinator {
             setMode(.idle)
             return
         }
+        clock.restart()
+        // Taken now so it's ready when the transcript is. It stays on this Mac unless the request goes to the model.
+        if !settings.usesOnDeviceRules, Permissions.screen {
+            pendingLook = Task { try await look(readsControls: true) }
+        }
         turn = Task { await runVoiceTurn() }
     }
 
@@ -209,6 +223,7 @@ final class Coordinator {
         interrupt()
         island.isOpen = false
         island.rest()
+        clock.restart()
         startRequest(text)
         turn = Task { await perform(transcript: text) }
     }
@@ -228,6 +243,7 @@ final class Coordinator {
         resolveConfirmation(false)
         turn?.cancel()
         turn = nil
+        discardPendingLook()
         returnTask?.cancel()
         returnTask = nil
         endGuide()
@@ -266,7 +282,9 @@ final class Coordinator {
         do {
             let transcript = try await speechIn.stop()
             try Task.checkCancellation()
+            clock.mark("transcript")
             guard !transcript.isEmpty else {
+                discardPendingLook()
                 island.showMessage("Didn't catch that.", lasting: 2)
                 setMode(.idle)
                 return
@@ -281,6 +299,7 @@ final class Coordinator {
     }
 
     private func perform(transcript: String) async {
+        if runQuickCommand(transcript) { return }
         do {
             try await exchange(transcript: transcript, guidance: nil, historyEntry: transcript)
         } catch is CancellationError {
@@ -290,22 +309,38 @@ final class Coordinator {
         }
     }
 
-    /// One round with the AI: takes fresh screenshots, streams the reply, and hands it to speech.
-    /// `continuesRequest` marks a later step of a request Jarvis is carrying out by itself.
-    private func exchange(transcript: String, guidance: String?, historyEntry: String, continuesRequest: Bool = false) async throws {
-        let onDevice = settings.usesOnDeviceRules
-        let looksAtScreen = !onDevice || OnDeviceRules.needsScreen(transcript)
-        onDeviceGuard = onDevice ? OnDeviceGuard(transcript: transcript) : nil
-        setMode(.thinking)
-        island.reply = ""
+    /// Runs a simple command without asking the model. Returns false if the model should handle it.
+    private func runQuickCommand(_ transcript: String) -> Bool {
+        // The commands it recognizes are in English, and its replies would be too.
+        guard !settings.hindiAssistant, let tag = QuickCommand.action(
+            for: transcript,
+            installedApps: { ActionRunner.installedAppNames() },
+            runningApps: { ActionRunner.runningApps().compactMap(\.localizedName) }
+        ) else { return false }
+        clock.mark("quick command matched")
+        discardPendingLook()
+        control = nil
+        onDeviceGuard = nil
+        resetTurnState()
+        allowsActions = true
+        isDirectRequest = true
+
+        let said = QuickCommand.confirmation(for: tag)
+        island.reply = said
+        setMode(.speaking)
+        island.show(.speaking)
+        speechOut.begin()
+        speechOut.enqueue([.action(tag), .say(said)])
+        history = Array((history + [ChatTurn(user: transcript, assistant: said)]).suffix(Self.historyLimit))
+        island.conversation = history
+        isTurnRecorded = true
+        speechOut.finishInput()
+        return true
+    }
+
+    private func resetTurnState() {
         island.notice = ""
         island.activity = ""
-        if !looksAtScreen { island.progress = "Thinking…" }
-        island.show(.thinking)
-        // Walkthrough follow-ups have no new words from the user, so only a direct request can act,
-        // along with the later steps of a request they gave Jarvis to carry out.
-        allowsActions = guidance == nil || continuesRequest
-        isDirectRequest = guidance == nil
         sawAction = false
         didRunAction = false
         didOpenSomething = false
@@ -316,15 +351,45 @@ final class Coordinator {
         sawDone = false
         sawTarget = false
         ranScreenAction = false
+        ranClickOrKeys = false
+        sawPoint = false
+        madePlan = false
+        beforeOpening = nil
         heldBeats = []
         declaredConfirmation = nil
+    }
+
+    /// One round with the AI: takes fresh screenshots, streams the reply, and hands it to speech.
+    /// `continuesRequest` marks a later step of a request Jarvis is carrying out by itself.
+    private func exchange(transcript: String, guidance: String?, historyEntry: String, continuesRequest: Bool = false) async throws {
+        let onDevice = settings.usesOnDeviceRules
+        let looksAtScreen = !onDevice || OnDeviceRules.needsScreen(transcript)
+        onDeviceGuard = onDevice ? OnDeviceGuard(transcript: transcript) : nil
+        setMode(.thinking)
+        island.reply = ""
+        if !looksAtScreen { island.progress = "Thinking…" }
+        island.show(.thinking)
+        // Walkthrough follow-ups have no new words from the user, so only a direct request can act,
+        // along with the later steps of a request they gave Jarvis to carry out.
+        allowsActions = guidance == nil || continuesRequest
+        isDirectRequest = guidance == nil
+        resetTurnState()
 
         let provider = try settings.makeProvider()
-        let captured = looksAtScreen ? try await capture() : []
+        let seen: Look
+        if !looksAtScreen {
+            seen = Look()
+        } else if let pendingLook {
+            self.pendingLook = nil
+            seen = try await pendingLook.value
+        } else {
+            seen = try await look(readsControls: !onDevice)
+        }
         try Task.checkCancellation()
+        clock.mark("screen and controls")
+        let captured = seen.captured
         screens = captured.map(\.map)
-        controls = onDevice ? [] : await UIInspector.controls(on: screens, primaryHeight: NSScreen.screens.first?.frame.height ?? 0)
-        try Task.checkCancellation()
+        controls = seen.controls
 
         let request = AIRequest(
             system: onDevice
@@ -340,15 +405,19 @@ final class Coordinator {
         speechOut.begin()
         for try await chunk in provider.stream(request) {
             try Task.checkCancellation()
+            if reply.isEmpty { clock.mark("model first text") }
             reply += chunk
             deliver(parser.feed(chunk))
         }
         try Task.checkCancellation()
         deliver(parser.finish(), final: true)
-        if control != nil, allowsActions, ranScreenAction, !sawDone, !sawTarget {
+        clock.mark("model finished")
+        if let control, allowsActions, ranScreenAction, !sawDone, !sawTarget,
+           control.needsAnotherLook(ranClickOrKeys: ranClickOrKeys, madePlan: madePlan) {
             // It acted without saying it was finished, so look at the result instead of stopping partway through.
             wantsNextStep = true
         }
+        clock.mark("reply was \(replyKind)")
         releaseHeldBeats()
 
         let spoken = onDeviceGuard?.spoken ?? ResponseParser.spokenText(of: reply)
@@ -368,6 +437,39 @@ final class Coordinator {
         island.conversation = history
         isTurnRecorded = true
         speechOut.finishInput()
+    }
+
+    /// How the reply ended, for the timing log. It never includes what was said.
+    private var replyKind: String {
+        var parts: [String] = []
+        if sawTarget { parts.append("guide") }
+        if sawPoint { parts.append("point") }
+        if ranClickOrKeys { parts.append("click or keys") } else if ranScreenAction { parts.append("open or quit") }
+        if sawAction, parts.isEmpty, !wantsNextStep, !sawDone { parts.append("other action") }
+        if wantsNextStep { parts.append("next step") }
+        if sawDone { parts.append("done") }
+        return parts.isEmpty ? "words only" : parts.joined(separator: ", ")
+    }
+
+    private struct Look {
+        var captured: [CapturedScreen] = []
+        var controls: [ScreenControl] = []
+    }
+
+    /// Takes the screenshot and reads the front window's controls at the same time.
+    private func look(readsControls: Bool) async throws -> Look {
+        let finding = readsControls ? UIInspector.startFindingControls() : nil
+        let captured = try await capture()
+        let found = await finding?.value ?? []
+        return Look(
+            captured: captured,
+            controls: UIInspector.controls(found, on: captured.map(\.map), primaryHeight: NSScreen.screens.first?.frame.height ?? 0)
+        )
+    }
+
+    private func discardPendingLook() {
+        pendingLook?.cancel()
+        pendingLook = nil
     }
 
     private func capture() async throws -> [CapturedScreen] {
@@ -410,10 +512,15 @@ final class Coordinator {
                 island.reply += island.reply.isEmpty ? text : " " + text
             case .action(let tag):
                 sawAction = true
-                if tag.kind.changesScreen { ranScreenAction = true }
+                if tag.kind == .plan { madePlan = true }
+                if tag.kind.changesScreen {
+                    ranScreenAction = true
+                    if !tag.kind.canFinishRequest { ranClickOrKeys = true }
+                }
             case .click:
                 sawAction = true
                 ranScreenAction = true
+                ranClickOrKeys = true
             case .next:
                 sawAction = true
                 wantsNextStep = allowsActions && control != nil
@@ -423,7 +530,7 @@ final class Coordinator {
             case .target:
                 sawTarget = true
             case .point:
-                break
+                sawPoint = true
             }
             // Actions run right away. Pointing stays in step with the words around it.
             switch beat {
@@ -507,7 +614,12 @@ final class Coordinator {
 
         didRunAction = true
         island.activity = ActionRunner.progress(for: tag)
+        if control != nil, !tag.kind.usesKeyboard {
+            beforeOpening = await ScreenCapture.thumbnail()
+            guard !Task.isCancelled else { return nil }
+        }
         let result = await ActionRunner.run(tag)
+        clock.mark("ran \(tag.kind.rawValue)")
         if result.failure == nil, tag.kind == .typeText || tag.kind == .paste { lastTyped = tag.value }
         return report(result)
     }
@@ -726,13 +838,25 @@ final class Coordinator {
         control = session
         let task = session.task
         let guidance = session.followUpGuidance()
-        let settle = didOpenSomething ? Self.settleAfterOpening : Self.settleAfterClick
+        let opened = didOpenSomething
+        let before = beforeOpening
+        // A reply with nothing but NEXT is waiting for something to load, and that can look settled until it arrives.
+        let ranSomething = ranScreenAction
         island.progress = ["Step \(session.step)", session.plan].compactMap { $0 }.joined(separator: ": ")
         setMode(.thinking)
         island.show(.thinking)
         turn = Task {
             do {
-                try await Task.sleep(nanoseconds: settle)
+                if opened {
+                    try await ScreenCapture.waitUntilSettled(
+                        mustChangeFrom: before, requiresChange: true,
+                        atLeast: Self.settleAfterOpening.minimum, limit: Self.settleAfterOpening.limit
+                    )
+                } else {
+                    let settle = Self.settleAfterClick
+                    try await ScreenCapture.waitUntilSettled(atLeast: ranSomething ? settle.minimum : settle.limit, limit: settle.limit)
+                }
+                clock.mark("waited for the screen")
                 try await exchange(transcript: task, guidance: guidance, historyEntry: task, continuesRequest: true)
             } catch is CancellationError {
                 // Interrupted: whatever interrupted the turn has already reset the state.
@@ -801,7 +925,7 @@ final class Coordinator {
 
         turn = Task {
             do {
-                try await Task.sleep(nanoseconds: Self.settleAfterClick)
+                try await ScreenCapture.waitUntilSettled(atLeast: Self.settleAfterClick.minimum, limit: Self.settleAfterClick.limit)
                 try await exchange(transcript: task, guidance: guidance, historyEntry: "(clicked \(name))")
             } catch is CancellationError {
                 // Interrupted: whatever interrupted the turn has already reset the state.

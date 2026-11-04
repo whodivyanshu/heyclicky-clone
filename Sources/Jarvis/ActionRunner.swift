@@ -261,8 +261,7 @@ enum ActionRunner {
         }
     }
 
-    /// Looks in every standard app folder, whether or not the app is in the Dock, then asks Spotlight.
-    static func findApp(_ query: String) -> URL? {
+    private static func installedApps() -> [String: URL] {
         let manager = FileManager.default
         let folders = [
             "/Applications",
@@ -281,6 +280,23 @@ enum ActionRunner {
                 if apps[name] == nil { apps[name] = URL(fileURLWithPath: folder).appendingPathComponent(item) }
             }
         }
+        return apps
+    }
+
+    static func installedAppNames() -> [String] {
+        Array(installedApps().keys)
+    }
+
+    /// Apps that could be asked to quit, which never includes Jarvis.
+    static func runningApps() -> [NSRunningApplication] {
+        NSWorkspace.shared.runningApplications.filter {
+            $0.activationPolicy == .regular && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+        }
+    }
+
+    /// Looks in every standard app folder, whether or not the app is in the Dock, then asks Spotlight.
+    static func findApp(_ query: String) -> URL? {
+        let apps = installedApps()
         if let match = AppMatcher.best(for: query, among: Array(apps.keys)) {
             return apps[match]
         }
@@ -295,9 +311,7 @@ enum ActionRunner {
     }
 
     private static func quitApp(_ query: String) -> ActionResult {
-        let running = NSWorkspace.shared.runningApplications.filter {
-            $0.activationPolicy == .regular && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
-        }
+        let running = runningApps()
         guard let match = AppMatcher.best(for: query, among: running.compactMap(\.localizedName)),
               let app = running.first(where: { $0.localizedName == match })
         else {

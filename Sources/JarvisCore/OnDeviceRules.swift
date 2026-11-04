@@ -73,15 +73,16 @@ public enum OnDeviceRules {
         }
     }
 
+    static let knownWebsites = [
+        "youtube": "youtube.com", "gmail": "mail.google.com", "google": "google.com",
+        "reddit": "reddit.com", "github": "github.com", "netflix": "netflix.com",
+        "instagram": "instagram.com", "facebook": "facebook.com", "linkedin": "linkedin.com",
+        "twitter": "x.com", "amazon": "amazon.com",
+    ]
+
     /// This model often opens well-known websites as if they were apps.
     static func correctingWebsite(_ tag: ActionTag) -> ActionTag {
-        let websites = [
-            "youtube": "youtube.com", "gmail": "mail.google.com", "google": "google.com",
-            "reddit": "reddit.com", "github": "github.com", "netflix": "netflix.com",
-            "instagram": "instagram.com", "facebook": "facebook.com", "linkedin": "linkedin.com",
-            "twitter": "x.com", "amazon": "amazon.com",
-        ]
-        guard tag.kind == .openApp, let address = websites[squeezed(tag.value)] else { return tag }
+        guard tag.kind == .openApp, let address = knownWebsites[squeezed(tag.value)] else { return tag }
         return ActionTag(kind: .openURL, value: address)
     }
 

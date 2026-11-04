@@ -196,7 +196,7 @@ struct SettingsView: View {
                         .toggleStyle(MonoSwitch())
                 }
             }
-            Note("Ask \"how do I...\" and Jarvis guides you click by click. It circles each step and moves on when you click it.")
+            Note("Say \"teach me...\" or \"walk me through...\" and Jarvis guides you click by click. It circles each step and moves on when you click it. Without full control, \"how do I...\" does this too.")
         }
     }
 

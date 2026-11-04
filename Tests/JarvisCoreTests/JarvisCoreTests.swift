@@ -669,3 +669,99 @@ final class WireFormatTests: XCTestCase {
         XCTAssertEqual(request.textWithHistory, "Earlier in this conversation:\nUser: u1\nYou: a1\n\nNow:\nnow")
     }
 }
+
+final class QuickCommandTests: XCTestCase {
+    private let installed = ["Google Chrome", "Google Chrome Canary", "Notes", "Xcode", "Visual Studio Code", "ChatGPT", "Android Studio", "Photos", "Adobe Photoshop 2024"]
+    private let running = ["Slack", "Google Chrome"]
+
+    private func action(_ transcript: String) -> ActionTag? {
+        QuickCommand.action(for: transcript, installedApps: { installed }, runningApps: { running })
+    }
+
+    func testOpensInstalledAppsHoweverTheyAreSaid() {
+        let chrome = ActionTag(kind: .openApp, value: "Google Chrome")
+        for transcript in ["open chrome", "Open Chrome.", "Launch Google Chrome", "Hey Jarvis, can you open Chrome?", "please open the chrome app", "open chrome for me", "switch to chrome"] {
+            XCTAssertEqual(action(transcript), chrome, transcript)
+        }
+        XCTAssertEqual(action("Open chat GPT"), ActionTag(kind: .openApp, value: "ChatGPT"))
+        XCTAssertEqual(action("open code"), ActionTag(kind: .openApp, value: "Visual Studio Code"))
+        XCTAssertEqual(action("open Photoshop"), ActionTag(kind: .openApp, value: "Adobe Photoshop 2024"))
+    }
+
+    func testOpensWebsites() {
+        XCTAssertEqual(action("go to github.com"), ActionTag(kind: .openURL, value: "github.com"))
+        XCTAssertEqual(action("open YouTube dot com"), ActionTag(kind: .openURL, value: "youtube.com"))
+        XCTAssertEqual(action("Visit Reddit"), ActionTag(kind: .openURL, value: "reddit.com"))
+        XCTAssertEqual(action("open gmail"), ActionTag(kind: .openURL, value: "mail.google.com"))
+        // Not Google Chrome, even though the app has that word in its name.
+        XCTAssertEqual(action("open google"), ActionTag(kind: .openURL, value: "google.com"))
+    }
+
+    func testQuitsOnlyRunningApps() {
+        XCTAssertEqual(action("quit Slack"), ActionTag(kind: .quitApp, value: "Slack"))
+        XCTAssertNil(action("quit Notes"))
+    }
+
+    func testAnythingMoreGoesToTheModel() {
+        for transcript in [
+            "", "open", "how do I open Chrome?", "what is Chrome", "open WhatsApp and send Lovesh how are you",
+            "open Chrome, then search for cats", "Open Chrome. Search for cats.", "open chrome in incognito",
+            "open youtube in brave", "open this", "open that file", "open the first link", "open a new tab",
+            "open my project", "open the door", "open main.swift", "open readme.md", "go to settings",
+            "close Chrome", "close this tab", "don't open chrome", "open studio", "open x", "search for chrome",
+        ] {
+            XCTAssertNil(action(transcript), transcript)
+        }
+    }
+
+    func testAppListsAreOnlyReadForACommand() {
+        let result = QuickCommand.action(for: "what time is it", installedApps: { XCTFail("read apps"); return [] }, runningApps: { XCTFail("read apps"); return [] })
+        XCTAssertNil(result)
+    }
+
+    func testWholeWordsDoesNotMatchInsideWords() {
+        XCTAssertNil(AppMatcher.wholeWords(for: "photo", among: ["Photos"]))
+        XCTAssertNil(AppMatcher.wholeWords(for: "code", among: ["Xcode"]))
+        XCTAssertEqual(AppMatcher.wholeWords(for: "chrome", among: ["Google Chrome Canary", "Google Chrome"]), "Google Chrome")
+    }
+
+    func testOnlyALoneOpenOnTheFirstStepFinishesARequest() {
+        var session = ControlSession(task: "open chrome")
+        XCTAssertFalse(session.needsAnotherLook(ranClickOrKeys: false, madePlan: false))
+        XCTAssertTrue(session.needsAnotherLook(ranClickOrKeys: true, madePlan: false))
+        XCTAssertTrue(session.needsAnotherLook(ranClickOrKeys: false, madePlan: true))
+        _ = session.advance()
+        XCTAssertTrue(session.needsAnotherLook(ranClickOrKeys: false, madePlan: false))
+    }
+
+    func testThumbnailComparison() {
+        let screen = [UInt8](repeating: 100, count: 1000)
+        var nearly = screen
+        nearly[0] = 255
+        nearly[1] = 104
+        XCTAssertTrue(ScreenRules.looksSame(screen, nearly))
+        var different = screen
+        for index in 0..<100 { different[index] = 200 }
+        XCTAssertFalse(ScreenRules.looksSame(screen, different))
+        XCTAssertFalse(ScreenRules.looksSame(screen, []))
+    }
+}
+
+final class TeachOrDoPromptTests: XCTestCase {
+    func testLaterStepsKeepGuidingWhenTheyAskedToLearn() {
+        XCTAssertTrue(ControlSession(task: "teach me").followUpGuidance().contains("guide them to the next click with TARGET"))
+    }
+
+    func testFullControlDoesTheJobUnlessAskedToTeach() {
+        let prompt = Prompt.system(canControlMac: true)
+        XCTAssertTrue(prompt.contains("do it, however they phrase it"))
+        XCTAssertTrue(prompt.contains("Use TARGET only when they clearly ask to learn"))
+        XCTAssertFalse(prompt.contains("they want to learn it"))
+    }
+
+    func testWithoutFullControlItStillTeaches() {
+        let prompt = Prompt.system(canControlMac: false)
+        XCTAssertTrue(prompt.contains("they want to learn it"))
+        XCTAssertFalse(prompt.contains("however they phrase it"))
+    }
+}
