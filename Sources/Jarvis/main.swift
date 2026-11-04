@@ -1,5 +1,9 @@
 import AppKit
 
+// Stopping a reply can end the `claude` process while its prompt is still being written to it.
+// By default that write kills all of Jarvis with no crash report. Ignored, it fails as a normal error.
+signal(SIGPIPE, SIG_IGN)
+
 if CommandLine.arguments.contains("--ask") {
     // Terminal check of the AI path. Needs no window or macOS permissions.
     SmokeTest.run()
