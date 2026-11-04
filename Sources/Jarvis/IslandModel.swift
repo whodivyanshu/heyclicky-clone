@@ -3,7 +3,7 @@ import Combine
 import JarvisCore
 
 enum IslandPhase: Equatable {
-    case resting, listening, thinking, speaking, guiding, message
+    case resting, listening, thinking, speaking, guiding, confirming, message
 }
 
 /// Everything the island shows. The coordinator writes to it, and the view and window controller read from it.
@@ -19,6 +19,11 @@ final class IslandModel: ObservableObject {
     @Published var notice = ""
     /// What Jarvis is doing or just did on the Mac, such as "Opened ChatGPT".
     @Published var activity = ""
+    /// Which step of a job is running, shown while Jarvis looks at the screen.
+    @Published var progress = ""
+    /// What Jarvis wants to do, read from the Mac rather than taken from the model.
+    @Published var confirmTitle = ""
+    @Published var confirmDetail = ""
     @Published var guideStep = 0
     @Published var guideLabel = ""
     @Published var conversation: [ChatTurn] = []
@@ -33,6 +38,7 @@ final class IslandModel: ObservableObject {
 
     var onAsk: (String) -> Void = { _ in }
     var onStop: () -> Void = {}
+    var onConfirm: (Bool) -> Void = { _ in }
     var onOpenSettings: () -> Void = {}
 
     private var restTask: Task<Void, Never>?
@@ -51,6 +57,9 @@ final class IslandModel: ObservableObject {
         message = ""
         notice = ""
         activity = ""
+        progress = ""
+        confirmTitle = ""
+        confirmDetail = ""
     }
 
     /// Keeps what's on the island readable for a moment, then folds it away.

@@ -138,7 +138,7 @@ struct IslandView: View {
         case .resting: return model.hasHardwareNotch ? model.notchWidth : 118
         case .thinking: return max(320, model.notchWidth + 180)
         case .listening: return max(380, model.notchWidth + 180)
-        case .speaking, .guiding, .message: return max(440, model.notchWidth + 180)
+        case .speaking, .guiding, .confirming, .message: return max(440, model.notchWidth + 180)
         }
     }
 
@@ -240,6 +240,9 @@ struct IslandView: View {
                 .padding(.horizontal, 9)
                 .padding(.vertical, 3)
                 .background(JarvisStyle.brand, in: Capsule())
+        case .confirming:
+            Image(systemName: "hand.raised.fill")
+                .foregroundStyle(JarvisStyle.amber)
         case .message:
             Image(systemName: "exclamationmark.circle.fill")
                 .foregroundStyle(JarvisStyle.amber)
@@ -255,7 +258,7 @@ struct IslandView: View {
         case .listening:
             bodyText(model.transcript.isEmpty ? "Listening…" : model.transcript, dim: model.transcript.isEmpty)
         case .thinking:
-            bodyText("Looking at your screen…", dim: true)
+            bodyText(model.progress.isEmpty ? "Looking at your screen…" : model.progress, dim: true)
         case .speaking:
             VStack(alignment: .leading, spacing: 6) {
                 activityLine
@@ -276,9 +279,58 @@ struct IslandView: View {
             .padding(.horizontal, 18)
             .padding(.bottom, 14)
             .transition(.opacity)
+        case .confirming:
+            confirmation
         case .message:
             bodyText(model.message, dim: false)
         }
+    }
+
+    private var confirmation: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(model.confirmTitle)
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true)
+            if !model.confirmDetail.isEmpty {
+                Text(model.confirmDetail)
+                    .font(.system(size: 12, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            noticeLine
+            HStack(spacing: 8) {
+                Button { model.onConfirm(true) } label: {
+                    Text("Yes, do it")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 14)
+                        .frame(height: 28)
+                        .background(.white, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                Button { model.onConfirm(false) } label: {
+                    Text("No")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .frame(height: 28)
+                        .background(.white.opacity(0.14), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                Spacer(minLength: 4)
+                Text("Or hold \(model.hotkeySymbols) and say yes or no")
+                    .font(.system(size: 11, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .lineLimit(1)
+            }
+            .padding(.top, 2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 18)
+        .padding(.bottom, 14)
+        .transition(.opacity)
     }
 
     private func bodyText(_ text: String, dim: Bool) -> some View {

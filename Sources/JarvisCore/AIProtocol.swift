@@ -22,6 +22,15 @@ public struct AIRequest: Sendable {
         self.userText = userText
         self.jpegImages = jpegImages
     }
+
+    /// The user's text with earlier turns in front, for providers that run a fresh session per request.
+    public var textWithHistory: String {
+        guard !history.isEmpty else { return userText }
+        let earlier = history
+            .map { "User: \($0.user)\nYou: \($0.assistant)" }
+            .joined(separator: "\n")
+        return "Earlier in this conversation:\n\(earlier)\n\nNow:\n\(userText)"
+    }
 }
 
 public struct AIError: LocalizedError, Equatable {
@@ -103,14 +112,7 @@ public enum ClaudeCodeWire {
                 "source": ["type": "base64", "media_type": "image/jpeg", "data": $0.base64EncodedString()],
             ]
         }
-        var text = request.userText
-        if !request.history.isEmpty {
-            let earlier = request.history
-                .map { "User: \($0.user)\nYou: \($0.assistant)" }
-                .joined(separator: "\n")
-            text = "Earlier in this conversation:\n\(earlier)\n\nNow:\n\(request.userText)"
-        }
-        content.append(["type": "text", "text": text])
+        content.append(["type": "text", "text": request.textWithHistory])
 
         var line = try JSONSerialization.data(withJSONObject: [
             "type": "user",

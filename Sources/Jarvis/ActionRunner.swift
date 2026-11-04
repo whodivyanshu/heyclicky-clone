@@ -7,6 +7,8 @@ struct ActionResult {
     var summary: String
     /// Spoken instead of the model's reply when the action didn't work.
     var failure: String?
+    /// During a job the model can try another way after this failure. Safety refusals are never retried.
+    var retryable = false
 }
 
 /// Carries out the actions a reply asks for.
@@ -20,6 +22,9 @@ enum ActionRunner {
         case .findFile: "Searching for \(tag.value)…"
         case .typeText: "Typing…"
         case .pressKey: "Pressing \(tag.value)…"
+        case .copy: "Copying…"
+        case .paste: "Pasting…"
+        case .plan, .confirm, .remember, .forget: ""
         }
     }
 
@@ -31,6 +36,10 @@ enum ActionRunner {
         case .findFile: await findFile(tag.value)
         case .typeText: await type(tag.value)
         case .pressKey: await press(tag.value)
+        case .copy: copy(tag.value)
+        case .paste: await paste(tag.value)
+        // The coordinator handles these, since they don't touch the Mac.
+        case .plan, .confirm, .remember, .forget: ActionResult(summary: "")
         }
     }
 
@@ -194,13 +203,51 @@ enum ActionRunner {
         return ActionResult(summary: "Pressed \(text)")
     }
 
+    // MARK: - Clipboard
+
+    private static func copy(_ text: String) -> ActionResult {
+        setClipboard(text)
+        return ActionResult(summary: "Copied to the clipboard")
+    }
+
+    private static func setClipboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    /// The clipboard's text, unless the app that copied it marked it as a secret, as password managers do.
+    static func clipboardText() -> String? {
+        let board = NSPasteboard.general
+        let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+        guard board.types?.contains(concealed) != true else { return nil }
+        return ContextRules.limited(board.string(forType: .string))
+    }
+
+    private static func paste(_ text: String) async -> ActionResult {
+        if let missing = missingAccessibility() { return missing }
+        if let refusal = keyboardRefusal() { return refusal }
+        setClipboard(text)
+        try? await Task.sleep(nanoseconds: keyboardSettle)
+        guard !Task.isCancelled else { return ActionResult(summary: "") }
+        // Focus can move during the wait.
+        if let refusal = keyboardRefusal() { return refusal }
+        let source = CGEventSource(stateID: .hidSystemState)
+        for isDown in [true, false] {
+            guard let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: isDown) else { continue }
+            event.flags = .maskCommand
+            event.post(tap: .cghidEventTap)
+        }
+        return ActionResult(summary: "Pasted \"\(text.prefix(40))\"")
+    }
+
     // MARK: - Apps
 
     private static func openApp(_ query: String) async -> ActionResult {
         guard let app = findApp(query) else {
             return ActionResult(
                 summary: "Couldn't find \(query)",
-                failure: "I couldn't find an app called \(query) on this Mac."
+                failure: "I couldn't find an app called \(query) on this Mac.",
+                retryable: true
             )
         }
         let name = app.deletingPathExtension().lastPathComponent
@@ -210,7 +257,7 @@ enum ActionRunner {
             try await NSWorkspace.shared.openApplication(at: app, configuration: configuration)
             return ActionResult(summary: "Opened \(name)")
         } catch {
-            return ActionResult(summary: "Couldn't open \(name)", failure: "\(name) wouldn't open.")
+            return ActionResult(summary: "Couldn't open \(name)", failure: "\(name) wouldn't open.", retryable: true)
         }
     }
 
@@ -254,7 +301,7 @@ enum ActionRunner {
         guard let match = AppMatcher.best(for: query, among: running.compactMap(\.localizedName)),
               let app = running.first(where: { $0.localizedName == match })
         else {
-            return ActionResult(summary: "\(query) isn't running", failure: "\(query) isn't running.")
+            return ActionResult(summary: "\(query) isn't running", failure: "\(query) isn't running.", retryable: true)
         }
         // A normal quit, so the app can still ask about unsaved work.
         app.terminate()
@@ -264,7 +311,7 @@ enum ActionRunner {
     // MARK: - Web
 
     private static func openURL(_ text: String) async -> ActionResult {
-        let couldNotOpen = ActionResult(summary: "Couldn't open that address", failure: "I couldn't open that address.")
+        let couldNotOpen = ActionResult(summary: "Couldn't open that address", failure: "I couldn't open that address.", retryable: true)
         let (address, browser) = ActionRules.addressAndBrowser(from: text)
         guard let url = ActionRules.webURL(from: address) else { return couldNotOpen }
         guard let browser else {
@@ -272,7 +319,7 @@ enum ActionRunner {
         }
 
         guard let app = findApp(browser), opensWebPages(app) else {
-            return ActionResult(summary: "Couldn't find \(browser)", failure: "I couldn't find a browser called \(browser) on this Mac.")
+            return ActionResult(summary: "Couldn't find \(browser)", failure: "I couldn't find a browser called \(browser) on this Mac.", retryable: true)
         }
         let name = app.deletingPathExtension().lastPathComponent
         do {
@@ -281,7 +328,7 @@ enum ActionRunner {
             try await NSWorkspace.shared.open([url], withApplicationAt: app, configuration: configuration)
             return ActionResult(summary: "Opened \(url.host ?? address) in \(name)")
         } catch {
-            return ActionResult(summary: "Couldn't open \(name)", failure: "\(name) wouldn't open that address.")
+            return ActionResult(summary: "Couldn't open \(name)", failure: "\(name) wouldn't open that address.", retryable: true)
         }
     }
 
@@ -300,7 +347,7 @@ enum ActionRunner {
         let found = await Task.detached { spotlight(["-onlyin", home, "-name", query]) }.value
         let usable = found.filter { !$0.contains("/Library/") && !$0.contains("/.") }
         guard let path = usable.first else {
-            return ActionResult(summary: "Couldn't find \(query)", failure: "I couldn't find a file matching \(query).")
+            return ActionResult(summary: "Couldn't find \(query)", failure: "I couldn't find a file matching \(query).", retryable: true)
         }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
         return ActionResult(summary: "Found \(URL(fileURLWithPath: path).lastPathComponent)")

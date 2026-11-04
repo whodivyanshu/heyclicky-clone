@@ -29,6 +29,8 @@ public enum Beat: Equatable, Sendable {
     case action(ActionTag)
     /// The model isn't finished: look at a new screenshot and ask it for the next step.
     case next
+    /// The whole request is finished, so no further step is needed.
+    case done
 }
 
 /// Turns streamed model text into speakable sentences and pointing tags.
@@ -38,7 +40,9 @@ public enum Beat: Equatable, Sendable {
 public struct ResponseParser {
     private var pending = ""
     private var sentence = ""
-    private static let tagStarts = ["[POINT:", "[TARGET:", "[CLICK:", "[NEXT]"] + ActionKind.allCases.map { "[\($0.rawValue):" }
+    private static let blockKinds = ActionKind.allCases.filter(\.isBlock)
+    private static let tagStarts = ["[POINT:", "[TARGET:", "[CLICK:", "[NEXT]", "[DONE]"]
+        + ActionKind.allCases.map { $0.isBlock ? "[\($0.rawValue)]" : "[\($0.rawValue):" }
     private static let maxTagLength = 2000
 
     private static let tagPattern = try! NSRegularExpression(
@@ -50,7 +54,7 @@ public struct ResponseParser {
         options: [.caseInsensitive]
     )
     private static let actionPattern = try! NSRegularExpression(
-        pattern: #"^\[(OPEN_APP|QUIT_APP|OPEN_URL|FIND_FILE|TYPE|KEY):\s*([^\]\n]+?)\s*\]$"#,
+        pattern: #"^\[(OPEN_APP|QUIT_APP|OPEN_URL|FIND_FILE|TYPE|KEY|PLAN|CONFIRM|REMEMBER|FORGET):\s*([^\]\n]+?)\s*\]$"#,
         options: [.caseInsensitive]
     )
     private static let nonePattern = try! NSRegularExpression(
@@ -68,7 +72,19 @@ public struct ResponseParser {
             sentence += pending[..<open]
             pending = String(pending[open...])
 
-            if let close = pending.firstIndex(of: "]") {
+            if let kind = Self.blockKinds.first(where: { pending.uppercased().hasPrefix("[\($0.rawValue)]") }) {
+                let opening = kind.rawValue.count + 2
+                guard let end = pending.range(of: "[/\(kind.rawValue)]", options: .caseInsensitive) else {
+                    // Still arriving. A block that never closes is dropped by `finish`.
+                    beats += completedSentences()
+                    return beats
+                }
+                let value = String(pending[pending.index(pending.startIndex, offsetBy: opening)..<end.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                pending = String(pending[end.upperBound...])
+                beats += flushSentence()
+                if !value.isEmpty { beats.append(.action(ActionTag(kind: kind, value: value))) }
+            } else if let close = pending.firstIndex(of: "]") {
                 let candidate = String(pending[...close])
                 pending = String(pending[pending.index(after: close)...])
                 if let tag = Self.parseTag(candidate) {
@@ -86,6 +102,9 @@ public struct ResponseParser {
                 } else if candidate.uppercased() == "[NEXT]" {
                     beats += flushSentence()
                     beats.append(.next)
+                } else if candidate.uppercased() == "[DONE]" {
+                    beats += flushSentence()
+                    beats.append(.done)
                 } else if !Self.matches(Self.nonePattern, candidate) {
                     sentence += candidate
                 }

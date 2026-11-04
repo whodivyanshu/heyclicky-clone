@@ -3,7 +3,7 @@ import JarvisCore
 
 enum VoiceConfig {
     case system(identifier: String)
-    case gemini(apiKey: String, voice: String, model: String, fallbackIdentifier: String)
+    case gemini(apiKey: String, voice: String, model: String, style: String, assistantEffect: Bool, fallbackIdentifier: String)
 }
 
 /// One Gemini speech request. It starts downloading immediately, so its audio is ready sooner when its turn comes.
@@ -11,12 +11,12 @@ final class GeminiVoiceStream: Sendable {
     let chunks: AsyncThrowingStream<Data, Error>
     private let task: Task<Void, Never>
 
-    init(text: String, apiKey: String, voice: String, model: String) {
+    init(text: String, apiKey: String, voice: String, model: String, style: String) {
         let (chunks, continuation) = AsyncThrowingStream.makeStream(of: Data.self)
         self.chunks = chunks
         task = Task.detached {
             do {
-                try await Self.download(text: text, apiKey: apiKey, voice: voice, model: model) { continuation.yield($0) }
+                try await Self.download(text: text, apiKey: apiKey, voice: voice, model: model, style: style) { continuation.yield($0) }
                 continuation.finish()
             } catch {
                 continuation.finish(throwing: error)
@@ -28,13 +28,13 @@ final class GeminiVoiceStream: Sendable {
         task.cancel()
     }
 
-    private static func download(text: String, apiKey: String, voice: String, model: String, onChunk: (Data) -> Void) async throws {
+    private static func download(text: String, apiKey: String, voice: String, model: String, style: String, onChunk: (Data) -> Void) async throws {
         var request = URLRequest(url: URL(string: GeminiVoiceWire.endpoint)!)
         request.httpMethod = "POST"
         request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
-        request.httpBody = try GeminiVoiceWire.requestBody(text: text, voice: voice, model: model)
+        request.httpBody = try GeminiVoiceWire.requestBody(text: text, voice: voice, model: model, style: style)
 
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -60,9 +60,37 @@ final class PCMStreamPlayer {
     private var inputEnded = false
     private var onFinished: (() -> Void)?
 
-    init() {
+    /// `assistantEffect` adds a little low-end weight and a faint room, for a more synthetic assistant sound.
+    init(assistantEffect: Bool = false) {
         engine.attach(node)
-        engine.connect(node, to: engine.mainMixerNode, format: format)
+        guard assistantEffect else {
+            engine.connect(node, to: engine.mainMixerNode, format: format)
+            return
+        }
+        let equalizer = AVAudioUnitEQ(numberOfBands: 2)
+        let depth = equalizer.bands[0]
+        depth.filterType = .lowShelf
+        depth.frequency = 180
+        depth.gain = 3
+        depth.bypass = false
+        let clarity = equalizer.bands[1]
+        clarity.filterType = .highShelf
+        clarity.frequency = 4500
+        clarity.gain = 2
+        clarity.bypass = false
+        let room = AVAudioUnitReverb()
+        room.loadFactoryPreset(.smallRoom)
+        room.wetDryMix = 10
+        // The speech is mono, but the effects need stereo, so a mixer converts it first.
+        let toStereo = AVAudioMixerNode()
+        let stereo = AVAudioFormat(standardFormatWithSampleRate: GeminiVoiceWire.sampleRate, channels: 2)!
+        engine.attach(toStereo)
+        engine.attach(equalizer)
+        engine.attach(room)
+        engine.connect(node, to: toStereo, format: format)
+        engine.connect(toStereo, to: equalizer, format: stereo)
+        engine.connect(equalizer, to: room, format: stereo)
+        engine.connect(room, to: engine.mainMixerNode, format: stereo)
     }
 
     func append(_ data: Data) throws {
@@ -151,6 +179,11 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
     private static let maxMergedCharacters = 400
 
     private let synthesizer = AVSpeechSynthesizer()
+    /// Speaks while the queue is held waiting for a confirmation, so it has no delegate to move the queue along.
+    private let announcer = AVSpeechSynthesizer()
+    private var announcementPlayer: PCMStreamPlayer?
+    private var announcementVoice: GeminiVoiceStream?
+    private var announcementGeneration = 0
     private var player: PCMStreamPlayer?
     private var currentVoice: GeminiVoiceStream?
     private var runningAction: Task<Void, Never>?
@@ -200,8 +233,8 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
             case .action(let tag):
                 flushUnsentText()
                 queue.append(.action(tag))
-            case .next:
-                // The coordinator acts on this once everything in the queue has finished.
+            case .next, .done:
+                // The coordinator acts on these once everything in the queue has finished.
                 break
             }
         }
@@ -230,17 +263,57 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
         isSpeaking = false
         inputComplete = false
         synthesizer.stopSpeaking(at: .immediate)
+        stopAnnouncement()
+    }
+
+    /// Says something right away, outside the queue, which stays held.
+    func announce(_ text: String) {
+        stopAnnouncement()
+        guard let voice = geminiStream(for: text) else {
+            announcer.speak(macUtterance(text))
+            return
+        }
+        var assistantEffect = false
+        if case .gemini(_, _, _, _, let effect, _) = config { assistantEffect = effect }
+        let player = PCMStreamPlayer(assistantEffect: assistantEffect)
+        announcementVoice = voice
+        announcementPlayer = player
+        let started = announcementGeneration
+        Task {
+            var heardAny = false
+            do {
+                for try await chunk in voice.chunks {
+                    guard started == announcementGeneration else { return }
+                    try player.append(chunk)
+                    heardAny = true
+                }
+                player.finish {}
+            } catch {
+                guard started == announcementGeneration, !heardAny else { return }
+                announcer.speak(macUtterance(text))
+            }
+        }
+    }
+
+    func stopAnnouncement() {
+        announcementGeneration += 1
+        announcementVoice?.cancel()
+        announcementVoice = nil
+        announcementPlayer?.stop()
+        announcementPlayer = nil
+        announcer.stopSpeaking(at: .immediate)
     }
 
     private func flushUnsentText() {
         guard !unsentText.isEmpty else { return }
         let text = unsentText
         unsentText = ""
-        var stream: GeminiVoiceStream?
-        if case .gemini(let key, let voice, let model, _) = config, !geminiFailedThisTurn {
-            stream = GeminiVoiceStream(text: text, apiKey: key, voice: voice, model: model)
-        }
-        queue.append(.say(text, voice: stream))
+        queue.append(.say(text, voice: geminiStream(for: text)))
+    }
+
+    private func geminiStream(for text: String) -> GeminiVoiceStream? {
+        guard case .gemini(let key, let voice, let model, let style, _, _) = config, !geminiFailedThisTurn else { return nil }
+        return GeminiVoiceStream(text: text, apiKey: key, voice: voice, model: model, style: style)
     }
 
     private func advance() {
@@ -290,17 +363,17 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
         queue.removeAll { if case .say = $0 { return true } else { return false } }
         unsentText = ""
         dropsFurtherSpeech = true
-        if case .gemini(let key, let voice, let model, _) = config, !geminiFailedThisTurn {
-            queue.insert(.say(text, voice: GeminiVoiceStream(text: text, apiKey: key, voice: voice, model: model)), at: 0)
-        } else {
-            queue.insert(.say(text, voice: nil), at: 0)
-        }
+        // Empty means the reply was dropped without a word, because Jarvis is about to try another way.
+        guard !text.isEmpty else { return }
+        queue.insert(.say(text, voice: geminiStream(for: text)), at: 0)
     }
 
     private func play(_ voice: GeminiVoiceStream, text: String) {
         currentVoice = voice
         let started = generation
-        let player = PCMStreamPlayer()
+        var assistantEffect = false
+        if case .gemini(_, _, _, _, let effect, _) = config { assistantEffect = effect }
+        let player = PCMStreamPlayer(assistantEffect: assistantEffect)
         self.player = player
         Task {
             var heardAny = false
@@ -333,14 +406,18 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     private func speakWithMacVoice(_ text: String) {
+        synthesizer.speak(macUtterance(text))
+    }
+
+    private func macUtterance(_ text: String) -> AVSpeechUtterance {
         let identifier: String
         switch config {
         case .system(let chosen): identifier = chosen
-        case .gemini(_, _, _, let fallback): identifier = fallback
+        case .gemini(_, _, _, _, _, let fallback): identifier = fallback
         }
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = Self.macVoice(identifier: identifier)
-        synthesizer.speak(utterance)
+        return utterance
     }
 
     private func finishedSpeaking() {

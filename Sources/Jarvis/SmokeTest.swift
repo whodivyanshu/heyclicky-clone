@@ -1,7 +1,7 @@
 import Foundation
 import JarvisCore
 
-/// `Jarvis --ask "question" [--image file.jpg] [--provider claude|gemini] [--model name] [--full-control]`
+/// `Jarvis --ask "question" [--image file.jpg] [--provider claude|gemini|apple|apple-cloud] [--model name] [--full-control] [--hindi]`
 /// Sends one request through the real provider and parser, then prints the resulting beats.
 enum SmokeTest {
     private static func value(_ flag: String) -> String? {
@@ -10,16 +10,19 @@ enum SmokeTest {
         return arguments[index + 1]
     }
 
-    /// `Jarvis --tts "text" [--voice name] [--model name]`: plays text aloud through the real speech path.
+    /// `Jarvis --tts "text" [--voice name] [--model name] [--hindi]`: plays text aloud through the real speech path.
     static func runVoice() -> Never {
         guard let key = ProcessInfo.processInfo.environment["GEMINI_API_KEY"] ?? Keychain.geminiKey else {
             print("No Gemini key: set GEMINI_API_KEY or save one in Settings.")
             exit(2)
         }
+        let hindi = CommandLine.arguments.contains("--hindi")
         let config = VoiceConfig.gemini(
             apiKey: key,
-            voice: value("--voice") ?? GeminiVoiceWire.defaultVoice,
+            voice: value("--voice") ?? (hindi ? GeminiVoiceWire.hindiAssistantVoice : GeminiVoiceWire.defaultVoice),
             model: value("--model") ?? GeminiVoiceWire.defaultModel,
+            style: hindi ? GeminiVoiceWire.hindiAssistantStyle : GeminiVoiceWire.defaultStyle,
+            assistantEffect: hindi,
             fallbackIdentifier: ""
         )
         let text = value("--tts") ?? "Hello from Jarvis."
@@ -81,32 +84,48 @@ enum SmokeTest {
     }
 
     static func run() -> Never {
-
-        let useGemini = value("--provider") == "gemini"
+        let hindiLocale = CommandLine.arguments.contains("--hindi") ? Locale(identifier: "hi-IN") : nil
         let provider: AIProvider
-        if useGemini {
+        switch value("--provider") {
+        case "gemini":
             guard let key = ProcessInfo.processInfo.environment["GEMINI_API_KEY"] ?? Keychain.geminiKey else {
                 print("No Gemini key: set GEMINI_API_KEY or save one in Settings.")
                 exit(2)
             }
             provider = GeminiProvider(apiKey: key, model: value("--model") ?? AppSettings.defaultGeminiModel)
-        } else {
+        case "apple":
+            provider = AppleIntelligenceProvider(location: .onDevice, locale: hindiLocale)
+        case "apple-cloud":
+            provider = AppleIntelligenceProvider(location: .privateCloud, locale: hindiLocale)
+        default:
             provider = ClaudeCodeProvider(model: value("--model") ?? AppSettings.defaultClaudeModel)
         }
 
-        let images = value("--image").flatMap { FileManager.default.contents(atPath: $0) }.map { [$0] } ?? []
-        let request = AIRequest(system: Prompt.system(canControlMac: CommandLine.arguments.contains("--full-control")), userText: value("--ask") ?? "Say hello.", jpegImages: images)
+        let ask = value("--ask") ?? "Say hello."
+        // The on-device model goes through the same rules as in the app.
+        var onDeviceGuard = value("--provider") == "apple" ? OnDeviceGuard(transcript: ask) : nil
+        var images = value("--image").flatMap { FileManager.default.contents(atPath: $0) }.map { [$0] } ?? []
+        if onDeviceGuard != nil, !OnDeviceRules.needsScreen(ask) { images = [] }
+        let system = onDeviceGuard != nil
+            ? OnDeviceRules.system(for: ask)
+            : Prompt.system(canControlMac: CommandLine.arguments.contains("--full-control"), hindi: CommandLine.arguments.contains("--hindi"))
+        let request = AIRequest(system: system, userText: ask, jpegImages: images)
 
         Task {
             let start = Date()
             var firstChunk: TimeInterval?
             var parser = ResponseParser()
+            var raw = ""
             do {
                 for try await chunk in provider.stream(request) {
                     if firstChunk == nil { firstChunk = Date().timeIntervalSince(start) }
-                    parser.feed(chunk).forEach { print($0) }
+                    raw += chunk
+                    let beats = parser.feed(chunk)
+                    (onDeviceGuard?.filter(beats) ?? beats).forEach { print($0) }
                 }
-                parser.finish().forEach { print($0) }
+                let beats = parser.finish()
+                (onDeviceGuard?.filter(beats, final: true) ?? beats).forEach { print($0) }
+                if onDeviceGuard != nil { print("model wrote: \(raw)") }
                 print(String(format: "first text after %.1fs, finished after %.1fs", firstChunk ?? -1, Date().timeIntervalSince(start)))
                 exit(0)
             } catch {

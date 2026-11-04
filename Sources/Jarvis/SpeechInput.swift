@@ -15,12 +15,13 @@ final class SpeechInput {
     private var finishWaiter: CheckedContinuation<Void, Never>?
     private var failure: Error?
 
-    func start() throws {
+    /// `locale` is the language to listen for. Nil uses the system language.
+    func start(locale: Locale? = nil) throws {
         cancel()
         transcript = ""
         failure = nil
 
-        guard let recognizer = SFSpeechRecognizer(), recognizer.isAvailable else {
+        guard let recognizer = locale.map({ SFSpeechRecognizer(locale: $0) }) ?? SFSpeechRecognizer(), recognizer.isAvailable else {
             throw JarvisMessage("Speech recognition isn't available right now.")
         }
         let request = SFSpeechAudioBufferRecognitionRequest()

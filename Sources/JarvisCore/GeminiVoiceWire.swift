@@ -6,7 +6,10 @@ public enum GeminiVoiceWire {
     public static let defaultModel = "gemini-3.8-flash-lite-tts"
     public static let defaultVoice = "Achird"
     public static let sampleRate: Double = 24000
-    private static let style = "natural, warm and conversational, like a helpful friend"
+    public static let defaultStyle = "natural, warm and conversational, like a helpful friend"
+    /// A starting point for the Hindi assistant preset. It can still be changed in Settings.
+    public static let hindiAssistantVoice = "Charon"
+    public static let hindiAssistantStyle = "a deep, calm, composed and refined Hindi-speaking AI assistant, measured and precise"
 
     /// Gemini's prebuilt voices and the style Google describes for each.
     public static let voices: [(name: String, style: String)] = [
@@ -20,7 +23,7 @@ public enum GeminiVoiceWire {
         ("Gacrux", "Mature"), ("Enceladus", "Breathy"), ("Algenib", "Gravelly"),
     ]
 
-    public static func requestBody(text: String, voice: String, model: String) throws -> Data {
+    public static func requestBody(text: String, voice: String, model: String, style: String = defaultStyle) throws -> Data {
         try JSONSerialization.data(withJSONObject: [
             "model": model,
             "stream": true,

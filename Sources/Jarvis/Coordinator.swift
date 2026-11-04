@@ -34,6 +34,26 @@ final class Coordinator {
     private var wantsNextStep = false
     /// An app or page that was just opened may not be ready, so keys sent now could land in the wrong window.
     private var didOpenSomething = false
+    /// The reply was planned for a screen that turned out to be different, so the rest of it is dropped and Jarvis looks again.
+    private var abandonedReply = false
+    private var sawDone = false
+    private var sawTarget = false
+    private var ranScreenAction = false
+    /// While a job runs, words wait for the end of the reply, and are only spoken if the job is finished.
+    private var heldBeats: [Beat] = []
+    /// What Jarvis itself typed for this request. Shown when it asks, since this is what would actually be sent.
+    private var lastTyped: String?
+    /// Only their own new words can change what's remembered, not later steps that follow a screenshot.
+    private var isDirectRequest = false
+    private var controls: [ScreenControl] = []
+    /// Set for a turn on Apple's on-device model, which can't be trusted with everything it asks for.
+    private var onDeviceGuard: OnDeviceGuard?
+
+    /// What the model said the next step will do, which also makes that step need a yes.
+    private var declaredConfirmation: String?
+    private var pendingConfirmation: CheckedContinuation<Bool, Never>?
+    private var confirmationTimeout: Task<Void, Never>?
+    private var isAnsweringConfirmation = false
 
     private var guide: GuideSession?
     private var clickMonitor: Any?
@@ -41,12 +61,17 @@ final class Coordinator {
 
     private static let minimumHold: TimeInterval = 0.25
     private static let historyLimit = 6
+    /// Silent steps have no words, and an empty turn in the history can be rejected by the provider.
+    private static let workingPlaceholder = "Working on it."
     private static let pointHoldAfterSpeech: UInt64 = 2_500_000_000
     /// How long a finished reply stays readable on the island.
     private static let replyLinger: Double = 5
     /// Gives the app time to react to a click before the next screenshot.
     private static let settleAfterClick: UInt64 = 700_000_000
+    /// Apps and pages take longer to be ready than a click takes to register.
+    private static let settleAfterOpening: UInt64 = 1_500_000_000
     private static let guideWait: UInt64 = 120_000_000_000
+    private static let confirmationWait: UInt64 = 60_000_000_000
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -81,6 +106,7 @@ final class Coordinator {
 
         island.onAsk = { [weak self] in self?.ask($0) }
         island.onStop = { [weak self] in self?.escape() }
+        island.onConfirm = { [weak self] in self?.resolveConfirmation($0) }
         island.onOpenSettings = { [weak self] in
             self?.island.isOpen = false
             self?.openSettings()
@@ -111,6 +137,10 @@ final class Coordinator {
             island.show(.guiding)
             setMode(.idle)
             await wait(3)
+            island.confirmTitle = "Press Return in WhatsApp"
+            island.confirmDetail = "Send \"How are you?\" to Lovesh\nTyped: How are you?"
+            island.show(.confirming)
+            await wait(4)
             overlay.returnToCursor()
             island.rest()
         }
@@ -125,6 +155,11 @@ final class Coordinator {
     // MARK: - Input
 
     private func pressed() {
+        // Holding the shortcut while Jarvis is asking answers the question, rather than stopping the job.
+        if pendingConfirmation != nil {
+            startAnsweringConfirmation()
+            return
+        }
         interrupt()
         island.isOpen = false
         pressedAt = Date()
@@ -141,7 +176,7 @@ final class Coordinator {
             // The key may have been released during a permission prompt.
             guard isListening else { return }
             do {
-                try speechIn.start()
+                try speechIn.start(locale: settings.listeningLocale)
             } catch {
                 isListening = false
                 show(error)
@@ -155,6 +190,10 @@ final class Coordinator {
         overlay.setLevel(0)
         island.level = 0
 
+        if isAnsweringConfirmation {
+            finishAnsweringConfirmation()
+            return
+        }
         if let pressedAt, Date().timeIntervalSince(pressedAt) < Self.minimumHold {
             // Probably part of another keyboard shortcut.
             speechIn.cancel()
@@ -185,6 +224,8 @@ final class Coordinator {
     }
 
     private func interrupt() {
+        // Answers first, so the waiting step can finish. Anything that interrupts a question is a no.
+        resolveConfirmation(false)
         turn?.cancel()
         turn = nil
         returnTask?.cancel()
@@ -196,11 +237,13 @@ final class Coordinator {
         didPoint = false
         control = nil
         wantsNextStep = false
+        heldBeats = []
     }
 
     private func startRequest(_ text: String) {
         guide = GuideSession(task: text)
-        control = settings.controlsMac ? ControlSession(task: text) : nil
+        control = settings.controlsMac && !settings.usesOnDeviceRules ? ControlSession(task: text) : nil
+        lastTyped = nil
     }
 
     private func ensureVoicePermissions() async -> Bool {
@@ -250,28 +293,43 @@ final class Coordinator {
     /// One round with the AI: takes fresh screenshots, streams the reply, and hands it to speech.
     /// `continuesRequest` marks a later step of a request Jarvis is carrying out by itself.
     private func exchange(transcript: String, guidance: String?, historyEntry: String, continuesRequest: Bool = false) async throws {
+        let onDevice = settings.usesOnDeviceRules
+        let looksAtScreen = !onDevice || OnDeviceRules.needsScreen(transcript)
+        onDeviceGuard = onDevice ? OnDeviceGuard(transcript: transcript) : nil
         setMode(.thinking)
         island.reply = ""
         island.notice = ""
         island.activity = ""
+        if !looksAtScreen { island.progress = "Thinking…" }
         island.show(.thinking)
         // Walkthrough follow-ups have no new words from the user, so only a direct request can act,
         // along with the later steps of a request they gave Jarvis to carry out.
         allowsActions = guidance == nil || continuesRequest
+        isDirectRequest = guidance == nil
         sawAction = false
         didRunAction = false
         didOpenSomething = false
         wantsNextStep = false
         actionFailure = nil
         isTurnRecorded = false
+        abandonedReply = false
+        sawDone = false
+        sawTarget = false
+        ranScreenAction = false
+        heldBeats = []
+        declaredConfirmation = nil
 
         let provider = try settings.makeProvider()
-        let captured = try await capture()
+        let captured = looksAtScreen ? try await capture() : []
         try Task.checkCancellation()
         screens = captured.map(\.map)
+        controls = onDevice ? [] : await UIInspector.controls(on: screens, primaryHeight: NSScreen.screens.first?.frame.height ?? 0)
+        try Task.checkCancellation()
 
         let request = AIRequest(
-            system: Prompt.system(canControlMac: control != nil),
+            system: onDevice
+                ? OnDeviceRules.system(for: transcript, memories: settings.memory.facts)
+                : Prompt.system(canControlMac: control != nil, hindi: settings.hindiAssistant, memories: settings.memory.facts),
             history: history,
             userText: userMessage(transcript: transcript, guidance: guidance, captured: captured),
             jpegImages: captured.map(\.jpeg)
@@ -286,18 +344,25 @@ final class Coordinator {
             deliver(parser.feed(chunk))
         }
         try Task.checkCancellation()
-        deliver(parser.finish())
-
-        let spoken = ResponseParser.spokenText(of: reply)
-        if spoken.isEmpty, !didPoint, !sawAction {
-            throw JarvisMessage("The model sent back an empty reply.")
+        deliver(parser.finish(), final: true)
+        if control != nil, allowsActions, ranScreenAction, !sawDone, !sawTarget {
+            // It acted without saying it was finished, so look at the result instead of stopping partway through.
+            wantsNextStep = true
         }
-        let said = actionFailure ?? spoken
+        releaseHeldBeats()
+
+        let spoken = onDeviceGuard?.spoken ?? ResponseParser.spokenText(of: reply)
+        if spoken.isEmpty, !didPoint, !sawAction {
+            throw JarvisMessage(onDevice ? "Sorry, I didn't get that. Try asking another way." : "The model sent back an empty reply.")
+        }
+        let said = actionFailure ?? (abandonedReply ? "" : spoken)
         if continuesRequest, let last = history.last {
             // One request stays one turn, however many steps it took, so it doesn't push out the conversation.
-            history[history.count - 1] = ChatTurn(user: last.user, assistant: [last.assistant, said].filter { !$0.isEmpty }.joined(separator: " "))
+            let earlier = last.assistant == Self.workingPlaceholder ? "" : last.assistant
+            let merged = [earlier, said].filter { !$0.isEmpty }.joined(separator: " ")
+            history[history.count - 1] = ChatTurn(user: last.user, assistant: merged.isEmpty ? Self.workingPlaceholder : merged)
         } else {
-            history.append(ChatTurn(user: historyEntry, assistant: said))
+            history.append(ChatTurn(user: historyEntry, assistant: said.isEmpty ? Self.workingPlaceholder : said))
         }
         history = Array(history.suffix(Self.historyLimit))
         island.conversation = history
@@ -326,48 +391,125 @@ final class Coordinator {
                 Prompt.ScreenInfo(index: $0.map.index, pixelWidth: Int($0.map.imageSize.width), pixelHeight: Int($0.map.imageSize.height))
             },
             cursor: cursor,
-            frontmostApp: NSWorkspace.shared.frontmostApplication?.localizedName
+            frontmostApp: NSWorkspace.shared.frontmostApplication?.localizedName,
+            selection: guidance == nil ? UIInspector.selectedText() : nil,
+            clipboard: guidance == nil && ContextRules.mentionsClipboard(transcript) ? ActionRunner.clipboardText() : nil,
+            controls: controls
         )
     }
 
-    private func deliver(_ beats: [Beat]) {
+    private func deliver(_ beats: [Beat], final: Bool = false) {
+        let beats = onDeviceGuard?.filter(beats, final: final) ?? beats
         guard !beats.isEmpty else { return }
         if mode != .speaking { setMode(.speaking) }
+        var now: [Beat] = []
         for beat in beats {
             switch beat {
             case .say(let text):
-                guard actionFailure == nil else { continue }
+                guard actionFailure == nil, !abandonedReply else { continue }
                 island.reply += island.reply.isEmpty ? text : " " + text
-            case .action, .click:
+            case .action(let tag):
                 sawAction = true
+                if tag.kind.changesScreen { ranScreenAction = true }
+            case .click:
+                sawAction = true
+                ranScreenAction = true
             case .next:
                 sawAction = true
                 wantsNextStep = allowsActions && control != nil
-            case .point, .target:
+            case .done:
+                sawAction = true
+                sawDone = true
+            case .target:
+                sawTarget = true
+            case .point:
                 break
+            }
+            // Actions run right away. Pointing stays in step with the words around it.
+            switch beat {
+            case .say, .point, .target:
+                if control != nil { heldBeats.append(beat) } else { now.append(beat) }
+            case .action, .click, .next, .done:
+                now.append(beat)
             }
         }
         if island.phase == .thinking { island.show(.speaking) }
+        speechOut.enqueue(now)
+    }
+
+    /// Jarvis works silently, so words are spoken only once there's nothing left to do.
+    private func releaseHeldBeats() {
+        var beats = heldBeats
+        heldBeats = []
+        if wantsNextStep {
+            beats.removeAll { if case .say = $0 { return true } else { return false } }
+        } else if control != nil, sawDone, !beats.contains(where: { if case .say = $0 { return true } else { return false } }) {
+            let word = settings.hindiAssistant ? "हो गया।" : "Done."
+            island.reply = word
+            beats.append(.say(word))
+        }
         speechOut.enqueue(beats)
     }
 
     /// Returns what to say instead of the model's reply if the action failed.
     private func act(_ tag: ActionTag) async -> String? {
         // After a failure the rest of the reply was planned for a screen that isn't there.
-        guard allowsActions, actionFailure == nil else { return nil }
+        guard allowsActions, actionFailure == nil, !abandonedReply else { return nil }
+        switch tag.kind {
+        case .plan:
+            control?.setPlan(tag.value)
+            return nil
+        case .confirm:
+            declaredConfirmation = tag.value
+            return nil
+        case .remember:
+            guard isDirectRequest, let saved = settings.memory.add(tag.value) else { return nil }
+            island.activity = "Remembered: \(saved)"
+            return nil
+        case .forget:
+            guard isDirectRequest else { return nil }
+            island.activity = settings.memory.forget(matching: tag.value).isEmpty ? "Nothing saved about that" : "Forgot that"
+            return nil
+        case .copy:
+            island.activity = ActionRunner.progress(for: tag)
+            return report(await ActionRunner.run(tag))
+        default:
+            break
+        }
+
         if tag.kind.usesKeyboard {
             guard control != nil else {
                 return report(ActionResult(summary: "Didn't type", failure: "I can't use your keyboard unless you turn on full control in Settings."))
             }
             guard !didOpenSomething else {
-                return report(ActionResult(summary: "Didn't type", failure: "The new window may not have been ready, so I stopped before typing. Ask me again and I'll take a fresh look."))
+                return report(ActionResult(summary: "Didn't type", failure: "The new window may not have been ready, so I stopped before typing. Ask me again and I'll take a fresh look.", retryable: true))
             }
         } else {
             didOpenSomething = true
         }
+
+        let needsYes: Bool
+        var title = String(ActionRunner.progress(for: tag).dropLast())
+        if tag.kind == .pressKey {
+            let context = UIInspector.keyContext()
+            needsYes = declaredConfirmation != nil || RiskRules.keyNeedsConfirmation(tag.value, context: context)
+            title = "Press \(tag.value) in \(context.appName)"
+        } else {
+            needsYes = declaredConfirmation != nil
+        }
+        if needsYes {
+            let app = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            let approved = await askToConfirm(title)
+            guard !Task.isCancelled else { return nil }
+            guard approved else { return declined() }
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app else { return screenChanged() }
+        }
+
         didRunAction = true
         island.activity = ActionRunner.progress(for: tag)
-        return report(await ActionRunner.run(tag))
+        let result = await ActionRunner.run(tag)
+        if result.failure == nil, tag.kind == .typeText || tag.kind == .paste { lastTyped = tag.value }
+        return report(result)
     }
 
     /// Flies the pointer to the target so they can see what's about to happen, then clicks it.
@@ -377,11 +519,13 @@ final class Coordinator {
             point(at: tag)
             return nil
         }
-        guard actionFailure == nil else { return nil }
+        guard actionFailure == nil, !abandonedReply else { return nil }
+        let tag = ControlMatcher.snap(tag, to: controls)
         guard !didRunAction, let screen = screen(for: tag) else {
             return report(ActionResult(
                 summary: "Didn't click \(tag.label ?? "that")",
-                failure: "The screen may have changed, so I didn't click. Ask me again and I'll take a fresh look."
+                failure: "The screen may have changed, so I didn't click. Ask me again and I'll take a fresh look.",
+                retryable: true
             ))
         }
         didRunAction = true
@@ -392,9 +536,122 @@ final class Coordinator {
         try? await Task.sleep(nanoseconds: UInt64(flight * 1_000_000_000))
         // Esc or the shortcut during the flight has to stop the click.
         guard !Task.isCancelled else { return nil }
+
+        // What the app calls the control counts as much as what the model calls it.
+        let quartz = Geometry.quartzPoint(appKit: location, primaryHeight: NSScreen.screens.first?.frame.height ?? 0)
+        let labels = UIInspector.labels(at: quartz)
+        let risky = RiskRules.riskyLabel(in: labels + [tag.label].compactMap { $0 })
+        if risky != nil || declaredConfirmation != nil {
+            let app = NSWorkspace.shared.frontmostApplication
+            let name = risky ?? labels.first ?? tag.label ?? "that"
+            let approved = await askToConfirm("Click \"\(name)\" in \(app?.localizedName ?? "this app")")
+            guard !Task.isCancelled else { return nil }
+            guard approved else { return declined() }
+            // Whatever they approved has to still be what's under the pointer.
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app?.processIdentifier,
+                  UIInspector.labels(at: quartz) == labels
+            else { return screenChanged() }
+        }
+
         let result = await ActionRunner.click(at: location, label: tag.label)
         guard !Task.isCancelled else { return nil }
         return report(result)
+    }
+
+    // MARK: - Confirmation
+
+    /// Waits for a yes. The answer comes only from their voice, the island's buttons or Esc, so the model can't answer for them.
+    private func askToConfirm(_ title: String) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        let summary = declaredConfirmation
+        declaredConfirmation = nil
+
+        island.confirmTitle = title
+        island.confirmDetail = [summary, lastTyped.map { "Typed: \($0.prefix(200))" }].compactMap { $0 }.joined(separator: "\n")
+        island.notice = ""
+        island.show(.confirming)
+        NSSound(named: "Tink")?.play()
+        if settings.hindiAssistant {
+            speechOut.announce("\(summary ?? title)। क्या मैं कर दूँ?")
+        } else {
+            speechOut.announce(summary.map { "\($0). Should I go ahead?" } ?? "\(title). Should I go ahead?")
+        }
+
+        let approved = await withCheckedContinuation { continuation in
+            pendingConfirmation = continuation
+            confirmationTimeout = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: Self.confirmationWait)
+                guard !Task.isCancelled else { return }
+                self?.resolveConfirmation(false)
+            }
+        }
+        guard !Task.isCancelled else { return false }
+        island.confirmTitle = ""
+        island.confirmDetail = ""
+        island.notice = ""
+        island.show(.speaking)
+        return approved
+    }
+
+    private func resolveConfirmation(_ approved: Bool) {
+        guard let pending = pendingConfirmation else { return }
+        pendingConfirmation = nil
+        confirmationTimeout?.cancel()
+        confirmationTimeout = nil
+        if isAnsweringConfirmation {
+            isAnsweringConfirmation = false
+            isListening = false
+            speechIn.cancel()
+        }
+        speechOut.stopAnnouncement()
+        pending.resume(returning: approved)
+    }
+
+    private func startAnsweringConfirmation() {
+        speechOut.stopAnnouncement()
+        isAnsweringConfirmation = true
+        isListening = true
+        pressedAt = Date()
+        island.transcript = ""
+        island.show(.listening)
+        Task {
+            guard await ensureVoicePermissions(), isListening else { return }
+            do {
+                try speechIn.start(locale: settings.listeningLocale)
+            } catch {
+                island.notice = error.localizedDescription
+                isListening = false
+                isAnsweringConfirmation = false
+                island.show(.confirming)
+            }
+        }
+    }
+
+    private func finishAnsweringConfirmation() {
+        isAnsweringConfirmation = false
+        if let pressedAt, Date().timeIntervalSince(pressedAt) < Self.minimumHold {
+            speechIn.cancel()
+            island.show(.confirming)
+            return
+        }
+        Task {
+            let answer = (try? await speechIn.stop()) ?? ""
+            guard pendingConfirmation != nil else { return }
+            if let decision = ConfirmationRules.decision(from: answer) {
+                resolveConfirmation(decision)
+            } else {
+                island.notice = "I didn't catch a yes or no."
+                island.show(.confirming)
+            }
+        }
+    }
+
+    private func declined() -> String? {
+        report(ActionResult(summary: "Left that to you", failure: settings.hindiAssistant ? "ठीक है, मैंने वह नहीं किया।" : "Okay, I didn't do that."))
+    }
+
+    private func screenChanged() -> String? {
+        report(ActionResult(summary: "Stopped", failure: "The screen changed while I was asking, so I didn't do it."))
     }
 
     private func report(_ result: ActionResult) -> String? {
@@ -403,6 +660,13 @@ final class Coordinator {
         guard let failure = result.failure else {
             control?.record(result.summary)
             return nil
+        }
+        if result.retryable, var session = control, session.recordFailure(failure) {
+            control = session
+            abandonedReply = true
+            wantsNextStep = true
+            heldBeats = []
+            return ""
         }
         actionFailure = failure
         island.reply = failure
@@ -453,18 +717,22 @@ final class Coordinator {
         guard session.advance() else {
             control = nil
             speechOut.begin()
-            deliver([.say("I've stopped after \(ControlSession.maxSteps) steps. Ask me again if there's more to do.")])
+            speechOut.enqueue([.say("I've stopped after \(ControlSession.maxSteps) steps. Ask me again if there's more to do.")])
+            island.reply = "I've stopped after \(ControlSession.maxSteps) steps. Ask me again if there's more to do."
+            island.show(.speaking)
             speechOut.finishInput()
             return true
         }
         control = session
         let task = session.task
         let guidance = session.followUpGuidance()
+        let settle = didOpenSomething ? Self.settleAfterOpening : Self.settleAfterClick
+        island.progress = ["Step \(session.step)", session.plan].compactMap { $0 }.joined(separator: ": ")
         setMode(.thinking)
         island.show(.thinking)
         turn = Task {
             do {
-                try await Task.sleep(nanoseconds: Self.settleAfterClick)
+                try await Task.sleep(nanoseconds: settle)
                 try await exchange(transcript: task, guidance: guidance, historyEntry: task, continuesRequest: true)
             } catch is CancellationError {
                 // Interrupted: whatever interrupted the turn has already reset the state.

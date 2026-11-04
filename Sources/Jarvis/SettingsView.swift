@@ -7,6 +7,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case general = "General"
     case voice = "Voice"
     case ai = "AI"
+    case memory = "Memory"
     case permissions = "Permissions"
 
     var id: String { rawValue }
@@ -16,6 +17,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: "slider.horizontal.3"
         case .voice: "waveform"
         case .ai: "sparkle"
+        case .memory: "brain"
         case .permissions: "lock.shield"
         }
     }
@@ -155,6 +157,7 @@ struct SettingsView: View {
         case .general: generalPage
         case .voice: voicePage
         case .ai: aiPage
+        case .memory: MemoryPage(memory: settings.memory)
         case .permissions: permissionsPage
         }
     }
@@ -187,7 +190,7 @@ struct SettingsView: View {
                         .toggleStyle(MonoSwitch())
                 }
                 Divider().overlay(Palette.line)
-                Row("Let Jarvis control my Mac", detail: "Clicks, types and presses keys to finish what you ask, step by step. Press Esc to stop it") {
+                Row("Let Jarvis control my Mac", detail: "Finishes whole jobs by itself, and asks you before anything like sending, deleting or paying. Press Esc to stop it") {
                     Toggle("", isOn: $settings.controlsMac)
                         .labelsHidden()
                         .toggleStyle(MonoSwitch())
@@ -207,6 +210,12 @@ struct SettingsView: View {
             .pickerStyle(.segmented)
 
             Card {
+                Row("Hindi assistant", detail: "Listens and replies in Hindi, with a deep, calm voice") {
+                    Toggle("", isOn: $settings.hindiAssistant)
+                        .labelsHidden()
+                        .toggleStyle(MonoSwitch())
+                }
+                Divider().overlay(Palette.line)
                 switch settings.voiceEngine {
                 case .gemini:
                     Row("Voice") {
@@ -251,6 +260,7 @@ struct SettingsView: View {
             Picker("", selection: $settings.provider) {
                 Text("Claude Code").tag(ProviderChoice.claudeCode)
                 Text("Gemini").tag(ProviderChoice.gemini)
+                Text("Apple Intelligence").tag(ProviderChoice.appleIntelligence)
             }
             .labelsHidden()
             .pickerStyle(.segmented)
@@ -271,6 +281,16 @@ struct SettingsView: View {
                     Row("Model") {
                         DarkField(text: $settings.geminiModel, width: 230)
                     }
+                case .appleIntelligence:
+                    Row("Runs on", detail: AppleIntelligenceProvider.unavailableReason(settings.appleLocation) ?? "Ready") {
+                        Picker("", selection: $settings.appleLocation) {
+                            ForEach(AppleModelLocation.allCases) { location in
+                                Text(location.title).tag(location)
+                            }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                    }
                 }
                 if settings.provider == .gemini || settings.voiceEngine == .gemini {
                     Divider().overlay(Palette.line)
@@ -289,6 +309,10 @@ struct SettingsView: View {
 
             if settings.provider == .claudeCode {
                 Note("Uses the claude command and your existing login. Requests count toward your Claude plan.")
+            } else if settings.provider == .appleIntelligence {
+                Note(settings.appleLocation == .onDevice
+                    ? "Stays on this Mac. It answers questions, opens and quits apps and websites, finds files and reads your screen when you ask. It can't click, type, point or use full control, and doesn't support Hindi."
+                    : "Screenshots and questions go to Apple's Private Cloud Compute. It needs internet, has a usage limit and doesn't support Hindi.")
             }
         }
     }
@@ -316,7 +340,7 @@ struct SettingsView: View {
                     Permissions.requestScreen()
                 }
                 Divider().overlay(Palette.line)
-                permissionRow("Accessibility", detail: "Optional. Lets Jarvis click and type when you ask it to", symbol: "cursorarrow.click", granted: accessibilityGranted) {
+                permissionRow("Accessibility", detail: "Lets Jarvis click, type, and read your selected text and the app's buttons", symbol: "cursorarrow.click", granted: accessibilityGranted) {
                     Permissions.requestAccessibility()
                 }
             }
@@ -403,7 +427,9 @@ struct SettingsView: View {
         preview.voiceConfig = { [settings] in settings.voiceConfig() }
         preview.onVoiceError = { message in previewResult = message }
         preview.begin()
-        preview.enqueue([.say("Hi, I'm Jarvis. Hold the shortcut and ask me about anything on your screen.")])
+        preview.enqueue([.say(settings.hindiAssistant
+            ? "नमस्ते, मैं जार्विस हूँ। शॉर्टकट दबाकर रखिए और अपनी स्क्रीन के बारे में कुछ भी पूछिए।"
+            : "Hi, I'm Jarvis. Hold the shortcut and ask me about anything on your screen.")])
         preview.finishInput()
     }
 
@@ -429,6 +455,31 @@ struct SettingsView: View {
             } catch {
                 testResult = error.localizedDescription
             }
+        }
+    }
+}
+
+private struct MemoryPage: View {
+    @ObservedObject var memory: MemoryStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if memory.facts.isEmpty {
+                Card {
+                    Row("Nothing saved yet", detail: "Say something like \"remember that my main project is Jarvis\"") { EmptyView() }
+                }
+            } else {
+                Card {
+                    ForEach(Array(memory.facts.enumerated()), id: \.element) { index, fact in
+                        if index > 0 { Divider().overlay(Palette.line) }
+                        Row(fact) {
+                            OutlineButton("Delete") { memory.remove(fact) }
+                        }
+                    }
+                }
+                OutlineButton("Forget everything") { memory.clear() }
+            }
+            Note("Saved only on this Mac, and sent to your chosen AI with each request. Jarvis saves a fact when you ask it to remember something or state a lasting preference.")
         }
     }
 }
