@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(SQLite3)
 import SQLite3
+#endif
 
 /// What goes into screen memory, decided before anything is written to disk.
 public enum ScreenMemoryRules {
@@ -45,7 +47,7 @@ public enum ScreenMemoryRules {
     }
 
     /// Whole words in any order, with the last able to be the start of a word. Quoted, so nothing typed can act as search syntax.
-    static func matchQuery(_ query: String) -> String? {
+    public static func matchQuery(_ query: String) -> String? {
         let words = query.split { !$0.isLetter && !$0.isNumber }.map(String.init)
         guard !words.isEmpty else { return nil }
         return words.map { "\"\($0)\"" }.joined(separator: " ") + "*"
@@ -58,7 +60,9 @@ public struct ScreenMemoryHit: Equatable, Sendable {
     public var snippet: String
 }
 
+#if canImport(SQLite3)
 /// Text read from the screen, stored in a full-text index on this Mac. Images are never kept.
+/// Windows has no system SQLite, so the Windows app keeps its own copy of this index in `ScreenMemoryStore.cs`.
 public final class ScreenMemoryDatabase: @unchecked Sendable {
     private var db: OpaquePointer?
     private let lock = NSLock()
@@ -141,3 +145,4 @@ public final class ScreenMemoryDatabase: @unchecked Sendable {
         return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int(statement, 0)) : 0
     }
 }
+#endif

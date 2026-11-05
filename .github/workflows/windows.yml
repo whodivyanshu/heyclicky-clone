@@ -1,0 +1,33 @@
+name: Windows
+
+on:
+  push:
+    branches: [main, windows-port]
+  pull_request:
+
+jobs:
+  core:
+    # The shared logic and the bridge DLL that the Windows app calls.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: compnerd/gha-setup-swift@v0.5.1
+        with:
+          swift-version: swift-6.4.2-release
+          swift-build: 6.4.2-RELEASE
+      - name: Show the toolchain
+        run: swift --version
+      - name: Run tests
+        run: swift test
+      - name: Build the bridge
+        run: swift build -c release --product JarvisBridge
+      - name: Call the built DLL the way the app will
+        shell: pwsh
+        run: windows/scripts/smoke-test-bridge.ps1 -Dll .build/release/JarvisBridge.dll
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JarvisBridge-x64
+          path: |
+            .build/release/JarvisBridge.dll
+            .build/release/JarvisBridge.lib

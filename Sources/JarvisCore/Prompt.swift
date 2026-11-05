@@ -5,7 +5,7 @@ public enum Prompt {
     /// `hindi` is the Hindi assistant setting, which replaces the usual choice of reply language.
     /// `memories` are facts the user asked Jarvis to remember.
     /// `shortcuts` are the names of their Shortcuts. `native` is off for a run that shouldn't use personal data.
-    public static func system(canControlMac: Bool, hindi: Bool = false, memories: [String] = [], shortcuts: [String] = [], native: Bool = true, screenMemory: Bool = false, teachingNotes: String? = nil) -> String {
+    public static func system(canControlMac: Bool, hindi: Bool = false, memories: [String] = [], shortcuts: [String] = [], native: Bool = true, screenMemory: Bool = false, teachingNotes: String? = nil, platform: Platform = .mac) -> String {
         var parts = [core, canControlMac ? fullControl : limitedControl]
         if native { parts.append(nativeAbilities(shortcuts: shortcuts)) }
         if screenMemory {
@@ -21,7 +21,8 @@ public enum Prompt {
         }
         parts.append(screenshotWarning)
         if hindi { parts.append(hindiAssistant) }
-        return parts.joined(separator: "\n\n")
+        let prompt = parts.joined(separator: "\n\n")
+        return platform == .windows ? windowsWording(prompt) : prompt
     }
 
     private static let hindiAssistant = """

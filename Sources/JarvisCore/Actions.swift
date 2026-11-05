@@ -207,7 +207,8 @@ public struct KeyCombo: Equatable, Sendable {
     ]
 
     /// Returns nil for an unknown key, or for a shortcut Jarvis should never press.
-    public static func parse(_ text: String) -> KeyCombo? {
+    /// The Windows key isn't a known modifier, so anything using it is refused on every platform.
+    public static func parse(_ text: String, platform: Platform = .mac) -> KeyCombo? {
         var modifiers = Set<Modifier>()
         var key: UInt16?
         var name = ""
@@ -223,8 +224,34 @@ public struct KeyCombo: Equatable, Sendable {
             }
         }
         guard let key else { return nil }
-        let combo = KeyCombo(keyCode: key, modifiers: modifiers)
-        return combo.isDestructive(name: name) ? nil : combo
+        switch platform {
+        case .mac:
+            let combo = KeyCombo(keyCode: key, modifiers: modifiers)
+            return combo.isDestructive(name: name) ? nil : combo
+        case .windows:
+            // Models used to Mac shortcuts may still write cmd, which is Ctrl on Windows.
+            if modifiers.remove(.command) != nil { modifiers.insert(.control) }
+            let combo = KeyCombo(keyCode: key, modifiers: modifiers)
+            return combo.isDestructiveOnWindows(name: name) ? nil : combo
+        }
+    }
+
+    /// The Windows versions of what `isDestructive` refuses. Alt+F4 and Ctrl+Q quit apps, Alt+Space opens
+    /// the menu that closes a window, Shift+Delete skips the Recycle Bin, and Ctrl+Delete or Ctrl+Backspace
+    /// match Command+Delete, including Ctrl+Alt+Delete.
+    private func isDestructiveOnWindows(name: String) -> Bool {
+        if modifiers.contains(.option), name == "f4" || name == "space" { return true }
+        if modifiers.contains(.control), name == "q" || keyCode == 51 || keyCode == 117 { return true }
+        return modifiers.contains(.shift) && (name == "delete" || name == "forwarddelete")
+    }
+
+    /// The key's plain name and modifiers, for the Windows app to turn into its own key codes.
+    /// "delete" means the Delete key here, as it's labelled on a PC, and only "backspace" means Backspace.
+    public static func windowsPress(_ text: String) -> (key: String, control: Bool, shift: Bool, alt: Bool)? {
+        guard let combo = parse(text, platform: .windows) else { return nil }
+        let names = text.lowercased().split(separator: "+").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let key = names.first(where: { modifierNames[$0] == nil }) else { return nil }
+        return (key, combo.modifiers.contains(.control), combo.modifiers.contains(.shift), combo.modifiers.contains(.option))
     }
 
     /// Command+Delete moves files to the Trash and with Shift empties it. Command+Q in its variants

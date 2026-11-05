@@ -42,16 +42,25 @@ public enum RiskRules {
 
     /// A terminal panel inside another app, such as VS Code, where typed text could run as a command.
     /// It can refuse a text box that merely has one of these names, which only costs them typing it themselves.
-    public static func isTerminalPane(_ context: KeyContext) -> Bool {
+    public static func isTerminalPane(_ context: KeyContext, platform: Platform = .mac) -> Bool {
         ([context.focusedLabel] + context.surroundingLabels).contains { label in
-            terminalWords.firstMatch(in: label, range: NSRange(label.startIndex..., in: label)) != nil
+            let range = NSRange(label.startIndex..., in: label)
+            return terminalWords.firstMatch(in: label, range: range) != nil
+                || (platform == .windows && windowsTerminalWords.firstMatch(in: label, range: range) != nil)
         }
     }
+
+    /// Only on Windows, because "Cmd" on a Mac is usually part of a shortcut's label.
+    private static let windowsTerminalWords = try! NSRegularExpression(
+        pattern: #"\b(cmd|cmd\.exe|wsl|conhost|git bash)\b"#,
+        options: [.caseInsensitive]
+    )
 
     private static let returnKey: UInt16 = 36
     private static let deleteKeys: Set<UInt16> = [51, 117]
     private static let spaceKey: UInt16 = 49
     private static let dKey: UInt16 = 2
+    private static let sKey: UInt16 = 1
 
     /// The first label that sounds like something hard to take back.
     public static func riskyLabel(in labels: [String]) -> String? {
@@ -71,8 +80,8 @@ public enum RiskRules {
         return messagingApps.contains(where: app.contains) || messagingSites.contains(where: title.contains)
     }
 
-    public static func keyNeedsConfirmation(_ text: String, context: KeyContext) -> Bool {
-        guard let combo = KeyCombo.parse(text) else { return false }
+    public static func keyNeedsConfirmation(_ text: String, context: KeyContext, platform: Platform = .mac) -> Bool {
+        guard let combo = KeyCombo.parse(text, platform: platform) else { return false }
         let label = context.focusedLabel.lowercased()
         let role = context.focusedRole.lowercased()
         let onRiskyButton = (role.contains("button") || role.contains("link")) && riskyLabel(in: [context.focusedLabel]) != nil
@@ -92,8 +101,15 @@ public enum RiskRules {
             // In a text box this removes a character. Anywhere else it can delete the selected item.
             return !(role.contains("textarea") || role.contains("textfield") || role.contains("searchfield") || role.contains("combobox"))
         case dKey:
+            // Ctrl+D sends the selected item to the Recycle Bin in File Explorer.
+            if platform == .windows {
+                return combo.modifiers == [.control] && context.appName.lowercased().contains("explorer")
+            }
             // Mail's send shortcut.
             return combo.modifiers == [.command, .shift]
+        case sKey:
+            // Outlook's send shortcut.
+            return platform == .windows && combo.modifiers == [.option]
         default:
             return false
         }

@@ -1,4 +1,6 @@
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
 import Foundation
 
 /// A click-by-click walkthrough: the AI targets one control, the user clicks it,
