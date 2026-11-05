@@ -63,6 +63,14 @@ final class NativeRulesTests: XCTestCase {
         XCTAssertNil(NativeRules.range(from: "2026-13-45", now: now, calendar: calendar()))
     }
 
+    func testDatesAreReadStrictly() {
+        XCTAssertEqual(NativeRules.date(from: "2026-11-06 15:00", calendar: calendar()), date("2026-11-06T15:00"))
+        XCTAssertEqual(NativeRules.date(from: "2026-11-06T15:00:30", calendar: calendar()), date("2026-11-06T15:00").addingTimeInterval(30))
+        for text in ["2026-02-30T10:00", "2026-11-06T25:00", "2026-11-06T15:60", "2026-1-6T15:00", "2026-11-06", "2026-11-06T15:00Z", "२०२६-11-06T15:00", ""] {
+            XCTAssertNil(NativeRules.date(from: text, calendar: calendar()), text)
+        }
+    }
+
     func testNewEvent() {
         let event = NativeRules.newEvent(from: "Dentist|2026-11-06T15:00|30", calendar: calendar())
         XCTAssertEqual(event, NativeRules.NewEvent(title: "Dentist", start: date("2026-11-06T15:00"), minutes: 30))

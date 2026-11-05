@@ -3,23 +3,45 @@ import Foundation
 /// Parsing for the tags that use Calendar, Reminders, Contacts, Mail and Shortcuts directly.
 /// Models write these by hand, so anything unclear is refused instead of guessed at.
 public enum NativeRules {
-    private static func localFormatter(_ format: String, _ calendar: Calendar) -> DateFormatter {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
-        formatter.dateFormat = format
-        formatter.isLenient = false
-        return formatter
+    /// Read by hand because `DateFormatter.date(from:)` crashes on Windows, and these formats are fixed anyway.
+    /// The numbers in `text`, where `widths` says how many digits each has to have and `separators` what comes between them.
+    private static func numbers(in text: String, separators: [Character], widths: [Int]) -> [Int]? {
+        var values: [Int] = []
+        var rest = Substring(text)
+        for (index, width) in widths.enumerated() {
+            let digits = rest.prefix(width)
+            guard digits.count == width, digits.allSatisfy({ $0.isASCII && $0.isNumber }), let value = Int(digits) else { return nil }
+            values.append(value)
+            rest = rest.dropFirst(width)
+            if index < separators.count {
+                guard rest.first == separators[index] else { return nil }
+                rest = rest.dropFirst()
+            }
+        }
+        return rest.isEmpty ? values : nil
     }
 
-    /// `2026-11-06T15:00`, in the Mac's own time zone. Seconds and a space instead of the T are also fine.
+    /// Nil for anything that isn't a real time, such as 30 February or a clock change's missing hour, rather than rolling it over.
+    private static func localDate(_ values: [Int], calendar: Calendar) -> Date? {
+        var wanted = DateComponents()
+        wanted.year = values[0]
+        wanted.month = values[1]
+        wanted.day = values[2]
+        wanted.hour = values.count > 3 ? values[3] : 0
+        wanted.minute = values.count > 4 ? values[4] : 0
+        wanted.second = values.count > 5 ? values[5] : 0
+        guard let date = calendar.date(from: wanted) else { return nil }
+        let actual = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+        return actual.year == wanted.year && actual.month == wanted.month && actual.day == wanted.day
+            && actual.hour == wanted.hour && actual.minute == wanted.minute && actual.second == wanted.second ? date : nil
+    }
+
+    /// `2026-11-06T15:00`, in the computer's own time zone. Seconds and a space instead of the T are also fine.
     public static func date(from text: String, calendar: Calendar = .current) -> Date? {
         let trimmed = text.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: " ", with: "T")
-        for format in ["yyyy-MM-dd'T'HH:mm", "yyyy-MM-dd'T'HH:mm:ss"] {
-            if let date = localFormatter(format, calendar).date(from: trimmed) { return date }
-        }
-        return nil
+        let values = numbers(in: trimmed, separators: ["-", "-", "T", ":"], widths: [4, 2, 2, 2, 2])
+            ?? numbers(in: trimmed, separators: ["-", "-", "T", ":", ":"], widths: [4, 2, 2, 2, 2, 2])
+        return values.flatMap { localDate($0, calendar: calendar) }
     }
 
     /// The time span for `today`, `tomorrow`, `this week`, `next week` or `2026-11-06`.
@@ -40,7 +62,9 @@ public enum NativeRules {
         case "next week":
             return calendar.dateInterval(of: .weekOfYear, for: now).flatMap { days($0.end, 7) }
         default:
-            return localFormatter("yyyy-MM-dd", calendar).date(from: wanted).flatMap { days(calendar.startOfDay(for: $0), 1) }
+            return numbers(in: wanted, separators: ["-", "-"], widths: [4, 2, 2])
+                .flatMap { localDate($0, calendar: calendar) }
+                .flatMap { days(calendar.startOfDay(for: $0), 1) }
         }
     }
 
