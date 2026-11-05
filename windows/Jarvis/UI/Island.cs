@@ -100,14 +100,14 @@ public static class RenderTo
     public static void Png(FrameworkElement element, string path)
     {
         var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap((int)element.ActualWidth, (int)element.ActualHeight, 96, 96, PixelFormats.Pbgra32);
-        var backed = new DrawingVisual();
-        using (var context = backed.RenderOpen())
+        var backing = new DrawingVisual();
+        using (var context = backing.RenderOpen())
         {
             // Gray behind it, so the shape of a black, transparent window shows up.
             context.DrawRectangle(new SolidColorBrush(Color.FromRgb(70, 70, 80)), null, new Rect(0, 0, element.ActualWidth, element.ActualHeight));
-            context.DrawRectangle(new VisualBrush(element), null, new Rect(0, 0, element.ActualWidth, element.ActualHeight));
         }
-        bitmap.Render(backed);
+        bitmap.Render(backing);
+        bitmap.Render(element);
         var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
         encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
         using var file = System.IO.File.Create(path);

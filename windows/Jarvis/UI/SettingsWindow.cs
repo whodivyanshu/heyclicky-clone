@@ -57,6 +57,9 @@ public sealed class SettingsWindow : Window
         this.coordinator = coordinator;
         tab = NeedsSetup ? Tab.Setup : Tab.General;
         Title = "Jarvis";
+#pragma warning disable WPF0001 // Marked as evaluation by .NET, and it only affects how the standard controls look.
+        ThemeMode = ThemeMode.Dark;
+#pragma warning restore WPF0001
         Width = 800;
         Height = 660;
         ResizeMode = ResizeMode.CanMinimize;
@@ -83,7 +86,7 @@ public sealed class SettingsWindow : Window
         var content = new StackPanel { Margin = new Thickness(32, 28, 32, 28) };
         content.Children.Add(pageTitle);
         content.Children.Add(page);
-        layout.Children.Add(new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        layout.Children.Add(new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
         Content = layout;
 
         SpeechModel.Changed += QueueRedraw;
