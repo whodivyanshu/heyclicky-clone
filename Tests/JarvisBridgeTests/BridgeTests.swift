@@ -151,6 +151,45 @@ final class BridgeTests: XCTestCase {
         XCTAssertNotNil(try call("routines.list", ["book": "not json"])["error"], "A damaged file must not look like an empty one")
     }
 
+    func testRoutineFormParts() throws {
+        let bad = try XCTUnwrap(try ok("routines.addParts", ["book": "", "name": "a", "when": "sometime", "request": "b"]) as? [String: Any])
+        XCTAssertEqual(bad["problem"] as? String, "when")
+        let good = try XCTUnwrap(try ok("routines.addParts", ["book": "", "name": "a|b", "when": "daily 09:00", "request": "c"]) as? [String: Any])
+        let list = try XCTUnwrap(try ok("routines.list", ["book": try XCTUnwrap(good["book"] as? String)]) as? [[String: Any]])
+        XCTAssertEqual(list.first?["name"] as? String, "a|b")
+    }
+
+    func testKokoroUsesTheWindowsLibrary() throws {
+        let catalog = try XCTUnwrap(try ok("kokoro.catalog") as? [String: Any])
+        let runtime = try XCTUnwrap(catalog["runtime"] as? [String: Any])
+        XCTAssertTrue((runtime["url"] as? String ?? "").contains("win-x64"))
+        let hindi = try XCTUnwrap(try ok("kokoro.voice", ["text": "नमस्ते", "english": 3, "hindi": 33]) as? [String: Any])
+        XCTAssertEqual(hindi["voice"] as? Int, 33)
+        XCTAssertNotNil(hindi["extra"] as? String)
+    }
+
+    /// Words of Jarvis's own that the microphone picked up before they started stay out of the request, as it grows.
+    func testBargeInKeepsItsStartingPoint() throws {
+        let speaking = "the build failed because of a missing import"
+        let first = try XCTUnwrap(try ok("barge.interruption", ["heard": "missing import open my notes please", "speaking": speaking]) as? [String: Any])
+        XCTAssertEqual(first["type"] as? String, "request")
+        XCTAssertEqual(first["text"] as? String, "open my notes please")
+        let start = try XCTUnwrap(first["startingAt"] as? Int)
+        XCTAssertEqual(try ok("barge.request", ["heard": "missing import open my notes please right now", "startingAt": start]) as? String, "open my notes please right now")
+    }
+
+    func testQuickCommandsOnlyAskForTheListsTheyUse() throws {
+        func needs(_ transcript: String) throws -> (installed: Bool, running: Bool) {
+            let result = try XCTUnwrap(try ok("quick.needs", ["transcript": transcript]) as? [String: Bool])
+            return (result["installed"] ?? false, result["running"] ?? false)
+        }
+        XCTAssertEqual(try needs("what's on my screen").installed, false)
+        XCTAssertEqual(try needs("what's on my screen").running, false)
+        XCTAssertEqual(try needs("open Chrome").installed, true)
+        XCTAssertEqual(try needs("quit Slack").running, true)
+        XCTAssertEqual(try needs("quit Slack").installed, false)
+    }
+
     func testImagesPassThroughToProviders() throws {
         let image = Data([1, 2, 3]).base64EncodedString()
         let body = try XCTUnwrap(try ok("gemini.body", ["system": "s", "userText": "u", "images": [image]]) as? String)

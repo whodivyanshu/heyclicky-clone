@@ -150,6 +150,15 @@ enum Bridge {
                 runningApps: { p.strings("running") }
             )
             return tag.map(encode)
+        case "quick.needs":
+            // Which lists this sentence would look at. Finding running and installed apps takes a moment, so they're only found when needed.
+            var installed = false, running = false
+            _ = QuickCommand.action(
+                for: try p.string("transcript"),
+                installedApps: { installed = true; return [] },
+                runningApps: { running = true; return [] }
+            )
+            return ["installed": installed, "running": running]
         case "quick.confirmation":
             return QuickCommand.confirmation(for: try actionTag(try p.object("tag")), hindi: p.bool("hindi"))
 
@@ -370,9 +379,11 @@ enum Bridge {
             switch BargeInRules.interruption(heard: try p.string("heard"), speaking: try p.string("speaking")) {
             case .stop: return ["type": "stop"]
             case .request(let start):
-                return ["type": "request", "text": BargeInRules.request(heard: try p.string("heard"), startingAt: start)]
+                return ["type": "request", "startingAt": start, "text": BargeInRules.request(heard: try p.string("heard"), startingAt: start)] as [String: Any]
             case nil: return nil
             }
+        case "barge.request":
+            return BargeInRules.request(heard: try p.string("heard"), startingAt: try p.int("startingAt"))
 
         // Meetings
         case "meeting.command":
@@ -400,7 +411,38 @@ enum Bridge {
         case "native.mailURL":
             return NativeRules.mailDraft(from: try p.string("text"))?.url?.absoluteString
 
+        // Kokoro
+        case "kokoro.catalog":
+            func download(_ item: KokoroCatalog.Download) -> [String: Any] {
+                ["url": item.url.absoluteString, "sha256": item.sha256, "megabytes": item.megabytes]
+            }
+            func voices(_ list: [KokoroCatalog.Voice]) -> [[String: Any]] {
+                list.map { ["name": $0.name, "description": $0.description, "id": $0.id] }
+            }
+            return [
+                "runtime": download(KokoroCatalog.windowsRuntime),
+                "model": download(KokoroCatalog.model),
+                "modelFolder": KokoroCatalog.modelFolder,
+                "englishVoices": voices(KokoroCatalog.englishVoices),
+                "hindiVoices": voices(KokoroCatalog.hindiVoices),
+                "defaultEnglishVoice": KokoroCatalog.defaultEnglishVoice,
+                "defaultHindiVoice": KokoroCatalog.defaultHindiVoice,
+            ] as [String: Any]
+        case "kokoro.voice":
+            let text = try p.string("text")
+            return [
+                "voice": KokoroCatalog.voice(for: text, english: try p.int("english"), hindi: try p.int("hindi")),
+                "extra": KokoroCatalog.generationExtra(for: text) ?? NSNull(),
+            ] as [String: Any]
+
         // Routines. The book is kept by the app as this JSON, and only changed in here.
+        case "routines.addParts":
+            guard let trigger = RoutineTrigger.parse(try p.string("when")) else { return ["problem": "when"] }
+            var book = try routineBook(p)
+            guard book.add(Routine(name: try p.string("name"), trigger: trigger, request: try p.string("request"))) else {
+                return ["problem": "full"]
+            }
+            return ["book": try encodeBook(book)]
         case "routines.add":
             guard let routine = Routine.parse(try p.string("text")) else { return ["added": false, "book": try p.string("book")] }
             var book = try routineBook(p)

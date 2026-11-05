@@ -15,6 +15,12 @@ public enum KokoroCatalog {
         sha256: "b10e5c7e2c30ea03de9c442655d14860d9edc475c6251d58a8f5f06e913a1d56",
         megabytes: 19
     )
+    /// The same version, built for 64-bit Windows.
+    public static let windowsRuntime = Download(
+        url: URL(string: "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-win-x64-shared-MD-Release.tar.bz2")!,
+        sha256: "3e971a04b2e0ba4dfa53d381a006367ce8c9f5f09b4ae00043e9845c2baded22",
+        megabytes: 20
+    )
     public static let model = Download(
         url: URL(string: "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_0.tar.bz2")!,
         sha256: "72c347230107ef8a31098ec4d468a605244beef5f1ed00db97efa13518800653",

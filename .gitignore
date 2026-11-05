@@ -2,3 +2,9 @@
 dist/
 .swiftpm/
 .DS_Store
+
+# Windows
+windows/native/
+windows/dist/
+windows/Jarvis/bin/
+windows/Jarvis/obj/

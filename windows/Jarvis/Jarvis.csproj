@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Platforms>x64</Platforms>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- Lets the C# compile on a Mac or in Linux CI as a quick check. Running it still needs Windows. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- The manifest sets per-monitor DPI for the whole process, and WPF reads it from there. Forms is only the tray icon. -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\Jarvis.ico</ApplicationIcon>
+    <AssemblyName>Jarvis</AssemblyName>
+    <RootNamespace>Jarvis</RootNamespace>
+    <Version>1.0.0</Version>
+    <!-- Everything it needs travels with it, so no .NET install is required. -->
+    <SelfContained>true</SelfContained>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="[2.2.1]" />
+    <PackageReference Include="Whisper.net" Version="[1.9.1]" />
+    <PackageReference Include="Whisper.net.Runtime" Version="[1.9.1]" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="[10.0.14]" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="[10.0.0]" />
+    <PackageReference Include="System.Drawing.Common" Version="[10.0.0]" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\Jarvis.ico" />
+  </ItemGroup>
+  <!-- The Swift bridge and its runtime, placed here by scripts/build.ps1. Absent on a compile-only check. -->
+  <ItemGroup Condition="Exists('..\native')">
+    <None Include="..\native\*.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

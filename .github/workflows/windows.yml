@@ -6,28 +6,45 @@ on:
   pull_request:
 
 jobs:
-  core:
-    # The shared logic and the bridge DLL that the Windows app calls.
+  build:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: compnerd/gha-setup-swift@v0.5.1
         with:
           swift-version: swift-6.4.2-release
           swift-build: 6.4.2-RELEASE
-      - name: Show the toolchain
-        run: swift --version
-      - name: Run tests
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Show the toolchains
+        run: |
+          swift --version
+          dotnet --version
+      - name: Run the shared logic's tests
         run: swift test
-      - name: Build the bridge
-        run: swift build -c release --product JarvisBridge
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Build the app and installer
+        shell: pwsh
+        run: windows/scripts/build.ps1
       - name: Call the built DLL the way the app will
         shell: pwsh
-        run: windows/scripts/smoke-test-bridge.ps1 -Dll .build/release/JarvisBridge.dll
+        run: |
+          $env:PATH = "$PWD\windows\dist\Jarvis;$env:PATH"
+          windows/scripts/smoke-test-bridge.ps1 -Dll windows/dist/Jarvis/JarvisBridge.dll
+      - name: Run the published app's self-test on this desktop
+        shell: pwsh
+        run: |
+          $report = "$env:RUNNER_TEMP\self-test.txt"
+          # Only the Swift and .NET files that were published, not the toolchain on this machine's PATH.
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $process = Start-Process -FilePath windows/dist/Jarvis/Jarvis.exe -ArgumentList '--self-test', $report -PassThru -Wait
+          Get-Content $report
+          if ($process.ExitCode -ne 0) { throw "The self-test failed with exit code $($process.ExitCode)." }
       - uses: actions/upload-artifact@v4
         with:
-          name: JarvisBridge-x64
-          path: |
-            .build/release/JarvisBridge.dll
-            .build/release/JarvisBridge.lib
+          name: Jarvis-Setup
+          path: windows/dist/Jarvis-Setup.exe
+          if-no-files-found: error
