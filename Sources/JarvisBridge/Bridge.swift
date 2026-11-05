@@ -173,10 +173,11 @@ enum Bridge {
         // Screens
         case "screen.globalPoint":
             let point = try screenMap(p).globalPoint(imageX: try p.double("x"), imageY: try p.double("y"))
-            return ["x": point.x, "y": -point.y]
+            // Double, because CGFloat isn't a JSON number on Windows.
+            return ["x": Double(point.x), "y": Double(-point.y)]
         case "screen.imagePoint":
             let point = try screenMap(p).imagePoint(global: CGPoint(x: try p.double("x"), y: -(try p.double("y"))))
-            return ["x": point.x, "y": point.y]
+            return ["x": Double(point.x), "y": Double(point.y)]
         case "screen.fitted":
             let size = Geometry.fitted(width: try p.int("width"), height: try p.int("height"), maxLongEdge: try p.int("maxLongEdge"))
             return ["width": size.width, "height": size.height]
