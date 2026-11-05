@@ -74,6 +74,7 @@ public sealed class Tray : IDisposable
     public Tray(Application app, bool demo, EventWaitHandle reopen)
     {
         this.app = app;
+        KokoroFiles.FinishRemoving();
         coordinator = new Coordinator(settings);
         coordinator.OpenSettings = ShowSettings;
         coordinator.OnModeChange = UpdateIcon;
@@ -268,7 +269,14 @@ public static class DevCommands
                 if (pcm.Length < 24000 || pcm.All(b => b == 0)) throw new InvalidOperationException("Kokoro made no audio.");
                 Console.WriteLine($"ok    kokoro voice {voice}: {pcm.Length / 48000.0:0.0} seconds");
             }
-            KokoroEngine.Shared.Unload();
+            // Removing and installing again in one session has to work, with the library still loaded.
+            KokoroInstaller.Shared.Remove();
+            if (KokoroFiles.IsInstalled) throw new InvalidOperationException("Kokoro still counts as installed after removing it.");
+            await KokoroInstaller.Shared.InstallAsync();
+            if (!KokoroFiles.IsInstalled) throw new InvalidOperationException("Kokoro: " + KokoroInstaller.Shared.Problem);
+            var again = Core.KokoroVoiceFor("Hello again.", catalog.DefaultEnglishVoice, catalog.DefaultHindiVoice);
+            if ((await KokoroEngine.Shared.Speak("Hello again.", again.Voice, again.Extra)).Length == 0) throw new InvalidOperationException("Kokoro made no audio after reinstalling.");
+            Console.WriteLine("ok    kokoro removed and installed again");
             KokoroInstaller.Shared.Remove();
             SpeechModel.Remove();
             Console.WriteLine("PASSED");

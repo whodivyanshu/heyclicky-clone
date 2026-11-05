@@ -19,10 +19,35 @@ public static class KokoroFiles
     /// <summary>Written last, so a download that was cut short never counts.</summary>
     public static bool IsInstalled => File.Exists(Marker);
     public static void MarkInstalled() => File.WriteAllBytes(Marker, Array.Empty<byte>());
+    /// <summary>
+    /// Windows won't delete a library that's loaded, and a loaded library stays until Jarvis quits. So this removes what
+    /// it can, with the marker first so it no longer counts as installed, and `FinishRemoving` clears the rest next launch.
+    /// </summary>
     public static void Remove()
     {
-        try { Directory.Delete(JarvisFiles.Kokoro, recursive: true); }
-        catch (Exception problem) when (problem is DirectoryNotFoundException) { }
+        try { File.Delete(Marker); }
+        catch (Exception problem) when (problem is IOException or UnauthorizedAccessException) { }
+        DeleteWhatItCan(JarvisFiles.Kokoro);
+    }
+
+    public static void FinishRemoving()
+    {
+        if (!IsInstalled && Directory.Exists(JarvisFiles.Kokoro)) DeleteWhatItCan(JarvisFiles.Kokoro);
+    }
+
+    private static void DeleteWhatItCan(string folder)
+    {
+        try
+        {
+            foreach (var file in Directory.GetFiles(folder))
+            {
+                try { File.Delete(file); }
+                catch (Exception problem) when (problem is IOException or UnauthorizedAccessException) { }
+            }
+            foreach (var inner in Directory.GetDirectories(folder)) DeleteWhatItCan(inner);
+            Directory.Delete(folder);
+        }
+        catch (Exception problem) when (problem is IOException or UnauthorizedAccessException) { }
     }
 }
 
@@ -64,8 +89,9 @@ public sealed class KokoroInstaller
             {
                 KokoroFiles.Remove();
                 Directory.CreateDirectory(KokoroFiles.Runtime);
-                // Only the libraries. The archive also holds programs Jarvis has no use for.
-                Unpack(runtime, KokoroFiles.Runtime, "--strip-components", "1", "*/lib/*");
+                // Only the libraries. The archive also holds programs Jarvis has no use for. A library that's still loaded
+                // from before can't be replaced, and it's the same pinned version, so it stays.
+                if (!KokoroEngine.Shared.IsLibraryLoaded) Unpack(runtime, KokoroFiles.Runtime, "--strip-components", "1", "*/lib/*");
                 Unpack(model, JarvisFiles.Kokoro);
             });
             KokoroFiles.MarkInstalled();
@@ -78,7 +104,8 @@ public sealed class KokoroInstaller
         }
         finally
         {
-            try { Directory.Delete(folder, recursive: true); } catch (IOException) { }
+            try { Directory.Delete(folder, recursive: true); }
+            catch (Exception problem) when (problem is IOException or UnauthorizedAccessException) { }
         }
     }
 
@@ -176,6 +203,8 @@ public sealed class KokoroEngine
     private GenerateFn? generate;
     private DestroyAudioFn? destroyAudio;
     private DateTime lastUsed;
+
+    public bool IsLibraryLoaded => library != IntPtr.Zero;
 
     private void LoadLibrary()
     {
