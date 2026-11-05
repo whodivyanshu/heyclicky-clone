@@ -176,6 +176,7 @@ final class TeachingTests: XCTestCase {
     }
 }
 
+#if canImport(SQLite3)
 final class ScreenMemoryTests: XCTestCase {
     private var url: URL!
     private var database: ScreenMemoryDatabase!
@@ -240,7 +241,10 @@ final class ScreenMemoryTests: XCTestCase {
         let bytes = try Data(contentsOf: url)
         XCTAssertNil(bytes.range(of: Data(secret.utf8)))
     }
+}
+#endif
 
+final class ScreenMemoryRuleTests: XCTestCase {
     func testPrivateAppsAndWindows() {
         XCTAssertTrue(ScreenMemoryRules.isPrivate(appName: "1Password 8", windowTitle: ""))
         XCTAssertTrue(ScreenMemoryRules.isPrivate(appName: "Keychain Access", windowTitle: ""))
