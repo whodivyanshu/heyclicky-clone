@@ -109,6 +109,21 @@ public sealed class SettingsWindow : Window
 
     private void QueueRedraw() => Dispatcher.BeginInvoke(Redraw);
 
+    /// <summary>For --render-ui.</summary>
+    public void RenderAllPages(string folder)
+    {
+        Show();
+        foreach (var (item, title, _) in Tabs)
+        {
+            tab = item;
+            Redraw();
+            UpdateLayout();
+            Dispatcher.Invoke(() => { }, DispatcherPriority.Background);
+            RenderTo.Png((FrameworkElement)Content, Path.Combine(folder, "settings-" + title.Replace(" ", "-") + ".png"));
+        }
+        Hide();
+    }
+
     public void ShowAndFocus()
     {
         Show();

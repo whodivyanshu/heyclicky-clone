@@ -95,6 +95,26 @@ public sealed class IslandModel
     }
 }
 
+public static class RenderTo
+{
+    public static void Png(FrameworkElement element, string path)
+    {
+        var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap((int)element.ActualWidth, (int)element.ActualHeight, 96, 96, PixelFormats.Pbgra32);
+        var backed = new DrawingVisual();
+        using (var context = backed.RenderOpen())
+        {
+            // Gray behind it, so the shape of a black, transparent window shows up.
+            context.DrawRectangle(new SolidColorBrush(Color.FromRgb(70, 70, 80)), null, new Rect(0, 0, element.ActualWidth, element.ActualHeight));
+            context.DrawRectangle(new VisualBrush(element), null, new Rect(0, 0, element.ActualWidth, element.ActualHeight));
+        }
+        bitmap.Render(backed);
+        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+        using var file = System.IO.File.Create(path);
+        encoder.Save(file);
+    }
+}
+
 public static class JarvisStyle
 {
     public static readonly Color Amber = Color.FromRgb(255, 176, 59), Rose = Color.FromRgb(255, 77, 110), Violet = Color.FromRgb(140, 64, 242);
@@ -224,6 +244,50 @@ public sealed class IslandController
         timer.Start();
         animation.Tick += (_, _) => Animate();
         animation.Start();
+    }
+
+    /// <summary>For --render-ui.</summary>
+    public async Task RenderAllStates(string folder)
+    {
+        async Task Shot(string name)
+        {
+            Rebuild();
+            window.UpdateLayout();
+            await Task.Delay(120);
+            RenderTo.Png(root, System.IO.Path.Combine(folder, "island-" + name + ".png"));
+            model.IsOpen = false;
+            model.Rest();
+        }
+        await Shot("resting");
+        model.Transcript = "How do I export this as a PDF?";
+        model.Level = 0.7f;
+        model.Show(IslandPhase.Listening);
+        await Shot("listening");
+        model.Show(IslandPhase.Thinking);
+        await Shot("thinking");
+        model.Reply = "Open the File menu first, then look for Export.";
+        model.Activity = "Opened Figma";
+        model.Show(IslandPhase.Speaking);
+        await Shot("speaking");
+        model.Reply = "Click Share up here.";
+        model.GuideStep = 2;
+        model.Show(IslandPhase.Guiding);
+        await Shot("guiding");
+        model.ConfirmTitle = "Press return in WhatsApp";
+        model.ConfirmDetail = "Send \"How are you?\" to Lovesh\nTyped: How are you?";
+        model.Show(IslandPhase.Confirming);
+        await Shot("confirming");
+        model.Message = "Jarvis needs microphone access.";
+        model.Show(IslandPhase.Message);
+        await Shot("message");
+        model.OfferTitle = "A build failed";
+        model.Show(IslandPhase.Offering);
+        await Shot("offering");
+        model.IsOpen = true;
+        await Shot("open-empty");
+        model.Conversation = new[] { new ChatTurn("What's on my screen?", "You're looking at a design file with three frames."), new ChatTurn("(clicked Share)", "Now choose Export.") };
+        model.IsOpen = true;
+        await Shot("open-chat");
     }
 
     private void Place(Display display)

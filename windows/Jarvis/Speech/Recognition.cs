@@ -159,7 +159,7 @@ public sealed class AudioSource : IDisposable
 }
 
 /// <summary>Averages every channel into one, because a PC's sound can be stereo or surround.</summary>
-internal sealed class Downmix(ISampleProvider source) : ISampleProvider
+public sealed class Downmix(ISampleProvider source) : ISampleProvider
 {
     private readonly int channels = source.WaveFormat.Channels;
     private float[] scratch = Array.Empty<float>();

@@ -155,6 +155,8 @@ public static class DevCommands
         try
         {
             if (args[0] == "--self-test") return SelfTest(Value(args, "--self-test"));
+            if (args[0] == "--speech-test") return SpeechTest();
+            if (args[0] == "--render-ui") return RenderUi(Value(args, "--render-ui") ?? "ui");
             if (args[0] == "--find-app")
             {
                 Console.WriteLine(ActionRunner.FindApp(Value(args, "--find-app") ?? "") ?? "no match");
@@ -217,6 +219,90 @@ public static class DevCommands
         }
         Stream().GetAwaiter().GetResult();
         return 0;
+    }
+
+    /// <summary>
+    /// The heavy parts, which download about 300 MB. Windows speaks a sentence and Whisper has to hear it, and Kokoro has
+    /// to make real audio in both languages, which would crash here if its native structures were laid out wrongly.
+    /// </summary>
+    private static int SpeechTest()
+    {
+        async Task<int> Run()
+        {
+            await SpeechModel.Install();
+            if (!SpeechModel.IsInstalled) throw new InvalidOperationException("Speech model: " + SpeechModel.Status);
+            Console.WriteLine("ok    speech model installed");
+
+            var wav = await WindowsVoice.Synthesize("This is a test of speech recognition on Windows.", "", false, CancellationToken.None);
+            using var memory = new MemoryStream(wav);
+            using var reader = new NAudio.Wave.WaveFileReader(memory);
+            NAudio.Wave.ISampleProvider source = NAudio.Wave.WaveExtensionMethods.ToSampleProvider(reader);
+            if (source.WaveFormat.Channels > 1) source = new Downmix(source);
+            var resampled = new NAudio.Wave.SampleProviders.WdlResamplingSampleProvider(source, AudioSource.SampleRate);
+            var samples = new List<float>();
+            var buffer = new float[AudioSource.SampleRate];
+            int read;
+            while ((read = resampled.Read(buffer, 0, buffer.Length)) > 0) samples.AddRange(buffer.Take(read));
+            using var transcriber = new Transcriber("en");
+            transcriber.Append(samples.ToArray());
+            var heard = await transcriber.Finish();
+            Console.WriteLine($"      Whisper heard: {heard}");
+            if (!heard.Contains("speech recognition", StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Whisper didn't hear the sentence.");
+            Console.WriteLine("ok    whisper");
+
+            var silence = new Transcriber(null);
+            silence.Append(new float[AudioSource.SampleRate * 2]);
+            var fromSilence = await silence.Finish();
+            if (fromSilence.Length != 0) throw new InvalidOperationException("Silence was heard as: " + fromSilence);
+            Console.WriteLine("ok    silence stays silent");
+
+            await KokoroInstaller.Shared.InstallAsync();
+            if (!KokoroFiles.IsInstalled) throw new InvalidOperationException("Kokoro: " + KokoroInstaller.Shared.Problem);
+            Console.WriteLine("ok    kokoro installed");
+            var catalog = Core.KokoroCatalog;
+            foreach (var text in new[] { "Hello from Jarvis.", "नमस्ते, मैं जार्विस हूँ।" })
+            {
+                var (voice, extra) = Core.KokoroVoiceFor(text, catalog.DefaultEnglishVoice, catalog.DefaultHindiVoice);
+                var pcm = await KokoroEngine.Shared.Speak(text, voice, extra);
+                // At least half a second at 24,000 samples a second, and not all silence.
+                if (pcm.Length < 24000 || pcm.All(b => b == 0)) throw new InvalidOperationException("Kokoro made no audio.");
+                Console.WriteLine($"ok    kokoro voice {voice}: {pcm.Length / 48000.0:0.0} seconds");
+            }
+            KokoroEngine.Shared.Unload();
+            KokoroInstaller.Shared.Remove();
+            SpeechModel.Remove();
+            Console.WriteLine("PASSED");
+            return 0;
+        }
+        return Run().GetAwaiter().GetResult();
+    }
+
+    /// <summary>Draws every Settings page and island state to a PNG, to look at without a PC to run it on.</summary>
+    private static int RenderUi(string folder)
+    {
+        Directory.CreateDirectory(folder);
+        var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        var result = 0;
+        app.Startup += async (_, _) =>
+        {
+            try
+            {
+                var settings = new AppSettings();
+                var coordinator = new Coordinator(settings);
+                new SettingsWindow(settings, coordinator).RenderAllPages(folder);
+                var island = new IslandController(coordinator.Island, settings);
+                island.Start();
+                await island.RenderAllStates(folder);
+            }
+            catch (Exception problem)
+            {
+                Console.WriteLine($"ERROR: {problem}");
+                result = 1;
+            }
+            app.Shutdown();
+        };
+        app.Run();
+        return result;
     }
 
     /// <summary>

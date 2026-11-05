@@ -43,6 +43,22 @@ jobs:
           $process = Start-Process -FilePath windows/dist/Jarvis/Jarvis.exe -ArgumentList '--self-test', $report -PassThru -Wait
           Get-Content $report
           if ($process.ExitCode -ne 0) { throw "The self-test failed with exit code $($process.ExitCode)." }
+      - name: Test Whisper and Kokoro with real audio
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          windows/dist/Jarvis/Jarvis.exe --speech-test | Tee-Object -Variable output
+          if ($LASTEXITCODE -ne 0 -or -not ($output -match 'PASSED')) { throw 'The speech test failed.' }
+      - name: Draw every screen
+        shell: pwsh
+        run: |
+          windows/dist/Jarvis/Jarvis.exe --render-ui ui | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Drawing the screens failed.' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Jarvis-screens
+          path: ui
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: Jarvis-Setup

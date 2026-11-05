@@ -43,7 +43,9 @@ public sealed class KokoroInstaller
         Changed?.Invoke();
     }
 
-    public async void Install()
+    public void Install() => _ = InstallAsync();
+
+    public async Task InstallAsync()
     {
         if (IsWorking) return;
         var catalog = Core.KokoroCatalog;

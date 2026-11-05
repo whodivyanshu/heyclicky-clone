@@ -2,6 +2,8 @@
 
 A voice companion for your Mac. Hold a shortcut and ask about what's on screen. Jarvis answers out loud, and a small pointer next to your cursor flies to whatever it's talking about.
 
+There's also a [Windows version](windows/README.md), which has its own setup. The rest of this page describes the Mac app.
+
 ## Run it
 
 ```sh

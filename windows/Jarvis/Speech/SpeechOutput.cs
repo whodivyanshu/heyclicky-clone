@@ -226,8 +226,8 @@ public static class WindowsVoice
 
     private static bool ContainsDevanagari(string text) => text.Any(c => c is >= 'ऀ' and <= 'ॿ');
 
-    /// <summary>Plays text, and completes when it's been heard or stopped.</summary>
-    public static async Task Speak(string text, string identifier, bool hindi, CancellationToken cancel)
+    /// <summary>A WAV file's bytes for this text.</summary>
+    public static async Task<byte[]> Synthesize(string text, string identifier, bool hindi, CancellationToken cancel)
     {
         using var synthesizer = new SpeechSynthesizer();
         if (Choose(identifier, text, hindi) is { } voice) synthesizer.Voice = voice;
@@ -235,6 +235,13 @@ public static class WindowsVoice
         var bytes = new byte[stream.Size];
         await using (var source = stream.AsStreamForRead())
             await source.ReadExactlyAsync(bytes, cancel);
+        return bytes;
+    }
+
+    /// <summary>Plays text, and completes when it's been heard or stopped.</summary>
+    public static async Task Speak(string text, string identifier, bool hindi, CancellationToken cancel)
+    {
+        var bytes = await Synthesize(text, identifier, hindi, cancel);
         cancel.ThrowIfCancellationRequested();
 
         using var memory = new MemoryStream(bytes);
