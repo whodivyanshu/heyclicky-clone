@@ -207,7 +207,7 @@ public sealed class SettingsWindow : Window
         var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         text.Children.Add(new TextBlock { Text = title, FontSize = 13, FontWeight = FontWeights.Medium, Foreground = Brushes.White, TextWrapping = TextWrapping.Wrap });
         if (!string.IsNullOrEmpty(detail)) text.Children.Add(new TextBlock { Text = detail, FontSize = 11, Foreground = Secondary, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
-        var row = new DockPanel { MinHeight = 50, Margin = new Thickness(15, 3, 15, 3) };
+        var row = new DockPanel { MinHeight = 44, Margin = new Thickness(15, 6, 15, 6) };
         if (control is not null)
         {
             DockPanel.SetDock(control, Dock.Right);
@@ -247,15 +247,27 @@ public sealed class SettingsWindow : Window
         return button;
     }
 
-    private static TextBox Field(string text, double width, Action<string> changed, string hint = "")
+    private static Grid Field(string text, double width, Action<string> changed, string hint = "")
     {
         var box = new TextBox
         {
             Text = text, Width = width, Height = 28, FontSize = 12, Background = White(18), Foreground = Brushes.White, BorderBrush = LineBrush, CaretBrush = Brushes.White,
-            VerticalContentAlignment = VerticalAlignment.Center, Padding = new Thickness(6, 0, 6, 0), ToolTip = hint.Length > 0 ? hint : null,
+            VerticalContentAlignment = VerticalAlignment.Center, Padding = new Thickness(6, 0, 6, 0),
         };
-        box.TextChanged += (_, _) => changed(box.Text);
-        return box;
+        var placeholder = new TextBlock
+        {
+            Text = hint, FontSize = 12, Foreground = White(102), IsHitTestVisible = false, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(9, 0, 9, 0),
+            Visibility = text.Length == 0 ? Visibility.Visible : Visibility.Collapsed,
+        };
+        box.TextChanged += (_, _) =>
+        {
+            placeholder.Visibility = box.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            changed(box.Text);
+        };
+        var field = new Grid();
+        field.Children.Add(box);
+        field.Children.Add(placeholder);
+        return field;
     }
 
     private static ComboBox Picker<T>(IEnumerable<(T Value, string Title)> options, T selected, Action<T> changed)
